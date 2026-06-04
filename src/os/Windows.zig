@@ -206,14 +206,14 @@ fn WndProc(
             _ = win.SetTimer(hwnd, 1, 16, null); // ~60fps during drag
             return .null;
         },
-        .timer => {
-            // if (framebuffer_resized) {
-            //     framebuffer_resized = true;
-            //     recreateSwapchain() catch {};
-            // }
-            // drawFrame() catch {};
-            // return .null;
-        },
+        // .timer => {
+        //     // if (framebuffer_resized) {
+        //     //     framebuffer_resized = true;
+        //     //     recreateSwapchain() catch {};
+        //     // }
+        //     // drawFrame() catch {};
+        //     // return .null;
+        // },
         .exit_size_move => {
             _ = win.KillTimer(hwnd, 1);
             // framebuffer_resized = true;
