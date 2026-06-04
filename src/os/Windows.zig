@@ -141,9 +141,6 @@ pub fn windowSize(self: *const Windows) struct { w: i32, h: i32 } {
     };
 }
 
-// TODO: swap to an event-queue:
-// 1. wndproc pushes onto it
-// 2.
 const Event = union(win.Messages) {
     null,
     create,
@@ -178,6 +175,7 @@ const Event = union(win.Messages) {
     enter_size_move,
     exit_size_move,
     theme_changed,
+    timer,
 };
 
 fn WndProc(
