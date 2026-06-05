@@ -171,11 +171,11 @@ const Event = union(win.Messages) {
     nc_calc_size,
     nc_activate,
     get_icon,
+    timer,
     moving,
     enter_size_move,
     exit_size_move,
     theme_changed,
-    timer,
 };
 
 fn WndProc(

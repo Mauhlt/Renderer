@@ -60,6 +60,9 @@ pipeline: vk.Pipeline = .null, // 152 bytes
 swapchain_framebuffers: Framebuffers = .{.null} ** MAX_IMAGES, // 176 bytes
 // buffers
 command_pool: vk.CommandPool = .null, // 184 bytes
+texture_image: vk.Image = .null,
+texture_buffer: vk.Buffer = .null,
+texture_buffer_memory: vk.DeviceMemory = .null,
 texxture_image_view: vk.ImageView = .null, // 192 bytes
 vertex_buffer: vk.Buffer = .null, // 200 bytes
 vertex_buffer_memory: vk.DeviceMemory = .null, // 208 bytes
@@ -118,7 +121,6 @@ fn initVulkan(
     vertices: []const Vertex,
     indices: []const u16,
 ) !void {
-    _ = gpa;
     // base
     const ries = [_][*:0]const u8{
         vk.ExtensionName.win32_surface,
@@ -153,7 +155,7 @@ fn initVulkan(
     self.pipeline = try self.createGraphicsPipeline(io);
     // commands + buffers
     self.command_pool = try self.createCommandPool();
-    // self.texture_image = try self.createTextureImage(io, gpa, "/BasicArt.bmp");
+    self.texture_image = try self.createTextureImage(io, gpa, "/BasicArt.bmp");
     // self.texture_image_memory = try self.createTextureImageMemory();
     // const texture_buffer = try self.createBuffer();
     // self.texture_buffer = texture_buffer.buffer;
@@ -188,7 +190,6 @@ fn coreLoop(
         if (!Window.pollPeek()) break;
         try self.drawFrame(vertices, indices);
         // std.debug.print("FPS: {}\n", .{fps.update(io)});
-        // io.sleep();
         try io.sleep(.{ .nanoseconds = 10 * std.time.ns_per_ms }, .awake);
     }
     try vk.deviceWaitIdle(self.device)
@@ -893,7 +894,7 @@ fn createTextureImage(
     io: std.Io,
     gpa: std.mem.Allocator,
     filepath: []const u8,
-) !void {
+) !vk.Image {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const fullpath = appendPaths(&buf, &.{ dirs.texture_dir, filepath });
 
@@ -912,12 +913,10 @@ fn createTextureImage(
     defer vk.freeMemory(self.device, staging_buffer_memory, null);
 
     switch (img.pixels) {
-        inline else => |data| try self.mapVulkanMemory(
-            @TypeOf(data),
-            data,
-            image_size,
-            staging_buffer_memory,
-        ),
+        inline else => |data| {
+            if (image_size != data.items.len) return error.InvalidDimensions;
+            try self.mapVulkanMemory(@TypeOf(data.items[0]), data.items, image_size, staging_buffer_memory);
+        },
     }
 
     self.texture_image = try createImage(
