@@ -15,6 +15,15 @@ pub fn init(
     height: u32,
 ) !Windows {
     const instance = win.GetModuleHandleW(null);
+    switch (@import("builtin").target.cpu.arch) {
+        .aarch64, .aarch64_be => {
+            _ = win.SetProcessDpiAwarenessContext(.per_monitor_aware_v2);
+        },
+        .x86_64, .x86, .x86_16 => {
+            _ = win.SetProcessDpiAwarenessContext(.unaware);
+        },
+        else => unreachable,
+    }
     // wide strings
     const class_name = utf8ToUtf16(name);
     const window_title = utf8ToUtf16(title);
@@ -36,6 +45,7 @@ pub fn init(
         .class_name = class_name,
         .small_icon = icon,
     };
+    // window register
     // register
     if (win.RegisterClassExW(&wc) == .null) //
         return error.FailedToRegisterClass;

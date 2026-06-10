@@ -1,40 +1,7 @@
 const std = @import("std");
 const Dir = std.Io.Dir;
 
-// remember to set DPI awareness
-// SetProcessDpiAwarenessContext(DPI_AWARENESSCONTEXTPERMONITORAWAREV2);
-// Windows has several DPI modes. V2 means: your app handles DPI itself per-monitor, Windows sends you WM_DPICHANGED when the window moves
-  // to a different-DPI screen, and Windows will not bitmap-scale (blur) your content. Without it on a high-DPI ARM device, Windows may scale
-  // or reposition your window in ways that make it invisible or wrong-sized.
-  //
-  // ---
-  // What value it is
-  //
-  // DPI_AWARENESS_CONTEXT is typed as HANDLE (*anyopaque) but is actually a sentinel integer cast to a pointer. The values are:
-  //
-  // ┌────────────────────────────────────────────┬─────────┐
-  // │                  Constant                  │ Integer │
-  // ├────────────────────────────────────────────┼─────────┤
-  // │ DPI_AWARENESS_CONTEXT_UNAWARE              │ -1      │
-  // ├────────────────────────────────────────────┼─────────┤
-  // │ DPI_AWARENESS_CONTEXT_SYSTEM_AWARE         │ -2      │
-  // ├────────────────────────────────────────────┼─────────┤
-  // │ DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE    │ -3      │
-  // ├────────────────────────────────────────────┼─────────┤
-  // │ DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 │ -4      │
-  // └────────────────────────────────────────────┴─────────┘
-  //
-  // In Zig:
-  // const DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2: ?*anyopaque =
-  //     @ptrFromInt(@as(usize, @bitCast(@as(isize, -4))));
-  //
-  // ---
-  // Where to call it
-  //
-  // Before RegisterClassEx and CreateWindowEx — ideally the very first thing in main:
-  //
-  // pub fn main() void {
-  //     _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+ //     _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   //
   //     // now register class, create window, etc.
   //     _ = RegisterClassExA(&wc);
