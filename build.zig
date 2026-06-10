@@ -19,7 +19,7 @@ pub fn build(b: *std.Build) !void {
             .link_libc = true,
         }),
     });
-    // vulkan
+    // Vulkan
     exe.root_module.addLibraryPath(b.path("Vulkan/Lib"));
     switch (target.result.os.tag) {
         .windows => exe.root_module.linkSystemLibrary("vulkan-1", .{}),
@@ -36,37 +36,59 @@ pub fn build(b: *std.Build) !void {
         },
         else => unreachable,
     }
-    // libraries
+    // Libraries
     const windows_mod = addLibrary(b, "Windows");
     const vulkan_mod = addLibraryWithCommonModules(b, "Vulkan", &.{windows_mod});
     const image_mod = addLibraryWithCommonModules(b, "Image", &.{ windows_mod, vulkan_mod });
     exe.root_module.addImport(windows_mod.name, windows_mod.mod);
     exe.root_module.addImport(vulkan_mod.name, vulkan_mod.mod);
     exe.root_module.addImport(image_mod.name, image_mod.mod);
+    { // Compile Shaders
+      const in_shader_dir_path = "src\\Shaders";
+      const out_shader_dir_path = "Shaders";
+        var dir = b.build_root.handle.openDir(b.graph.io, shader_dir_path, .{ .iterate = true }) catch |err| {
+            std.debug.print("Error: {}\n", .{err});
+            return;
+        };
+        defer dir.close(b.graph.io);
+        var walker = try dir.walk(b.allocator);
+        var shader_dst_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const bin_path = "Vulkan\\Bin\\glslc.exe";
+        while (try walker.next(b.graph.io)) |entry| {
+            switch (entry.kind) {
+                .file => {},
+                else => continue,
+            }
+            const src = entry.basename;
+            if (!isShader(src)) continue;
+            std.debug.print("{s}\n", .{src});
+            // get out file
+            const dst = createOutputShaderPath(&shader_dst_buf, src);
+            std.debug.print("{s}\n", .{dst});
+            const install = compileShaders(b, "Shaders", src, dst);
+const install = systemCommand(
+    b,
+    bin_path,
+    shader_dir_path,
 
-    // install
-    b.installArtifact(exe);
-    // options
-    const basepath = b.build_root.path.?;
-    const shader_dir = b.pathJoin(&.{ basepath, "src\\Shaders" });
-    const texture_dir = b.pathJoin(&.{ basepath, "src\\Textures" });
-    const dir_options = b.addOptions();
-    dir_options.addOption([]const u8, "shader_dir", shader_dir);
-    dir_options.addOption([]const u8, "texture_dir", texture_dir);
-    exe.root_module.addOptions("dirs", dir_options);
-    // Compile Shaders
-    const io = b.graph.io;
-    var dir = try Dir.openDirAbsolute(io, shader_dir, .{ .iterate = true });
-    defer dir.close(io);
-    var walker = try dir.walk(b.allocator);
-    while (try walker.next(io)) |entry| {
-        switch (entry.kind) {
-            .file => {},
-            else => continue,
+    out_dir: []const u8,
+    out: []const u8,
+)
+            b.getInstallStep().dependOn(&install.step);
         }
-        if (!isShader(entry.basename)) continue;
-        try compileShader(b, io, shader_dir, entry.basename);
     }
+    { // Add Custom Dirs
+        const sub_paths = [_][]const u8{ "src\\Shaders", "src\\Textures" };
+        for (sub_paths) |sub_path| {
+            b.installDirectory(.{
+                .source_dir = b.path(sub_path),
+                .install_dir = .bin,
+                .install_subdir = "",
+            });
+        }
+    }
+    // Install
+    b.installArtifact(exe);
     // Create Run Command
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
@@ -91,33 +113,56 @@ fn isShader(name: []const u8) bool {
     } else return false;
 }
 
-fn compileShader(
-    b: *std.Build,
-    io: std.Io,
-    shader_dir: []const u8,
-    filename: []const u8,
-) !void {
-    const glslc = b.pathFromRoot("Vulkan/Bin/glslc.exe");
-    const in_file = b.pathFromRoot(b.pathJoin(&.{ shader_dir, filename }));
-    // get out file
-    var new_filename_buf: [std.fs.max_path_bytes]u8 = undefined;
-    @memcpy(new_filename_buf[0..in_file.len], in_file);
+fn createOutputShaderPath(buf: []u8, shader_src: []const u8) []u8 {
+    @memcpy(buf[0..shader_src.len], shader_src);
     const ext = ".spv";
-    @memcpy(new_filename_buf[in_file.len .. in_file.len + ext.len], ext);
-    const out_file = new_filename_buf[0 .. in_file.len + ext.len];
-    // start child process
-    var child = try std.process.spawn(io, .{
-        .argv = &.{ glslc, in_file, "-o", out_file },
-        .create_no_window = true,
-    });
-    const term = try child.wait(io);
-    outer: while (true) {
-        switch (term) {
-            .exited => break :outer,
-            else => {},
-        }
-    }
+    @memcpy(buf[shader_src.len .. shader_src.len + ext.len], ext);
+    const shader_dst = buf[0 .. shader_src.len + ext.len];
+    return shader_dst;
 }
+
+fn systemCommand(
+    b: *std.Build,
+    bin_path: []const u8,
+    src_dir: []const u8,
+    src: []const u8,
+    out_dir: []const u8,
+    out: []const u8,
+) *std.Build.Step.InstallFile {
+    const compile = b.addSystemCommand(&.{bin_path});
+    compile.addFileArg(b.pathJoin(&.{ src_dir, src }));
+    compile.addArg("-o");
+    const spv = compile.addOutputFileArg(out);
+    return b.addInstallFileWithDir(spv, .bin, b.pathJoin(&.{ out_dir, out }));
+}
+
+// fn compileShader(
+//     b: *std.Build,
+//     io: std.Io,
+//     shader_dir: []const u8,
+//     filename: []const u8,
+// ) !void {
+// const glslc = b.pathFromRoot("Vulkan/Bin/glslc.exe");
+// const in_file = b.pathFromRoot(b.pathJoin(&.{ shader_dir, filename }));
+// // get out file
+// var new_filename_buf: [std.fs.max_path_bytes]u8 = undefined;
+// @memcpy(new_filename_buf[0..in_file.len], in_file);
+// const ext = ".spv";
+// @memcpy(new_filename_buf[in_file.len .. in_file.len + ext.len], ext);
+// const out_file = new_filename_buf[0 .. in_file.len + ext.len];
+// // start child process
+// var child = try std.process.spawn(io, .{
+//     .argv = &.{ glslc, in_file, "-o", out_file },
+//     .create_no_window = true,
+// });
+// const term = try child.wait(io);
+// outer: while (true) {
+//     switch (term) {
+//         .exited => break :outer,
+//         else => {},
+//     }
+// }
+// }
 
 fn addLibrary(b: *std.Build, library: []const u8) Module {
     const package = b.dependency(library, .{});

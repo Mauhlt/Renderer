@@ -35,8 +35,6 @@ const Semaphores: type = [MAX_FRAMES_IN_FLIGHT]vk.Semaphore;
 const Fences: type = [MAX_FRAMES_IN_FLIGHT]vk.Fence;
 const Vertex = @import("Vertex.zig");
 const FPS = @import("FPS.zig");
-// Options
-const dirs = @import("dirs");
 // Total: 4kB
 // base
 window: Window = undefined, // 8 bytes
@@ -56,6 +54,7 @@ swapchain_image_views: ImageViews = .{.null} ** MAX_IMAGES, // 128 bytes
 swapchain_render_pass: vk.RenderPass = .null, // 136 bytes
 // pipeline
 pipeline_layout: vk.PipelineLayout = .null, // 144 bytes
+pipeline_config = .{},
 pipeline: vk.Pipeline = .null, // 152 bytes
 swapchain_framebuffers: Framebuffers = .{.null} ** MAX_IMAGES, // 176 bytes
 // buffers
@@ -78,7 +77,11 @@ in_flight_fences: Fences = .{.null} ** MAX_FRAMES_IN_FLIGHT, // 312 bytes
 current_frame: u32 = 0, // 320 bytes
 resize: bool = false, // 328 bytes
 
-pub fn run(io: std.Io, gpa: std.mem.Allocator) !void {
+pub fn run(
+    io: std.Io,
+    gpa: std.mem.Allocator,
+    exe_dir: []const u8,
+) !void {
     // hardcoded now - need to load vertices on the fly
     const vertices = [_]Vertex{
         .{ .pos = .{ -0.5, -0.5 } },
@@ -93,7 +96,7 @@ pub fn run(io: std.Io, gpa: std.mem.Allocator) !void {
         std.mem.span(app_name),
         std.mem.span(app_name),
     );
-    try self.initVulkan(io, gpa, app_name, &vertices, &indices);
+    try self.initVulkan(io, gpa, app_name, exe_dir, &vertices, &indices);
     self.window.show();
     try self.coreLoop(io, &vertices, &indices);
     self.deinit();
@@ -117,6 +120,7 @@ fn initVulkan(
     self: *@This(),
     io: std.Io,
     gpa: std.mem.Allocator,
+    exe_dir: []u8,
     app_name: [*:0]const u8,
     vertices: []const Vertex,
     indices: []const u16,
@@ -152,14 +156,13 @@ fn initVulkan(
     self.swapchain_framebuffers = try self.createSwapchainFramebuffers();
     // pipeline
     self.pipeline_layout = try self.createPipelineLayout();
-    self.pipeline = try self.createGraphicsPipeline(io);
+    const shader_files = [_][]const u8{ "/square.vert.spv", "/square.frag.spv" };
+    const shader_dir = try std.fs.path.join(gpa, &.{ exe_dir, "Shaders" });
+    self.pipeline = try self.createGraphicsPipeline(io, shader_dir, shader_files);
     // commands + buffers
     self.command_pool = try self.createCommandPool();
     self.texture_image = try self.createTextureImage(io, gpa, "/BasicArt.bmp");
-    // self.texture_image_memory = try self.createTextureImageMemory();
-    // const texture_buffer = try self.createBuffer();
-    // self.texture_buffer = texture_buffer.buffer;
-    // self.texture_buffer_memory = texture_buffer.memory;
+    self.texture_image_memory = try self.createTextureImageMemory();
     const vertex_buffer = try self.createBuffer(Vertex, vertices);
     self.vertex_buffer = vertex_buffer.buffer;
     self.vertex_buffer_memory = vertex_buffer.memory;
@@ -533,12 +536,18 @@ fn createPipelineLayout(self: *const @This()) vk.Errors!vk.PipelineLayout {
 
 fn createGraphicsPipeline(
     self: *const @This(),
+    gpa: std.mem.Allocator,
     io: std.Io,
-) vk.Errors!vk.Pipeline {
+    shader_dir_path: []const u8,
+    shader_paths: []const []const u8,
+) (std.mem.Allocator.Error || vk.Errors)!vk.Pipeline {
+    // path to shaders should be passed in
     var sms = [_]vk.ShaderModule{.null} ** 2;
-    var filepath_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const filenames = [_][]const u8{ "/square.vert.spv", "/square.frag.spv" };
-    for (filenames, 0..) |ext, i| {
+
+    var shader_dir = try std.Io.Dir.openDirAbsolute(io, shader_dir_path, .{});
+    defer shader_dir.close(io);
+
+    for (shader_paths, 0..) |ext, i| {
         const path = appendPaths(&filepath_buf, &.{ dirs.shader_dir, ext });
         var data: [4096]u8 = undefined;
         const sc = readShaderSPV(io, path, &data) catch unreachable;
@@ -549,6 +558,7 @@ fn createGraphicsPipeline(
             vk.destroyShaderModule(self.device, sms[i], null);
         }
     }
+
     const vert_shader_stage_create_info: vk.PipelineShaderStageCreateInfo = .{
         .stage = .vertex_bit,
         .module = sms[0],
@@ -784,8 +794,12 @@ fn mapVulkanMemory(
     @memcpy(gpu_data[0..data.len], data);
 }
 
-const Buffer = struct {
+const VulkanBuffer = struct {
     buffer: vk.Buffer,
+    memory: vk.DeviceMemory,
+};
+const VulkanImage = struct {
+    image: vk.Image,
     memory: vk.DeviceMemory,
 };
 
@@ -793,7 +807,7 @@ fn createBuffer(
     self: *const @This(),
     comptime T: type,
     data: []const T,
-) vk.Errors!Buffer {
+) vk.Errors!VulkanBuffer {
     const size: vk.DeviceSize = @sizeOf(T) * data.len;
     const staging_buffer = try self.createVulkanBuffer(size, .init(.transfer_src_bit));
     defer vk.destroyBuffer(self.device, staging_buffer, null);
@@ -894,11 +908,11 @@ fn createTextureImage(
     io: std.Io,
     gpa: std.mem.Allocator,
     filepath: []const u8,
-) !vk.Image {
+) !VulkanImage {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const fullpath = appendPaths(&buf, &.{ dirs.texture_dir, filepath });
 
-    const img = try Image.read(io, gpa, fullpath);
+    var img = try Image.read(io, gpa, fullpath);
     defer img.deinit(gpa);
 
     const image_size: vk.DeviceSize = img.width * img.height * 3;
@@ -914,33 +928,45 @@ fn createTextureImage(
 
     switch (img.pixels) {
         inline else => |data| {
-            if (image_size != data.items.len) return error.InvalidDimensions;
-            try self.mapVulkanMemory(@TypeOf(data.items[0]), data.items, image_size, staging_buffer_memory);
+            if (image_size != data.len) return error.MismatchDimensions;
+            try self.mapVulkanMemory(@TypeOf(data[0]), data, image_size, staging_buffer_memory);
         },
     }
 
-    self.texture_image = try createImage(
+    var texture: VulkanImage = undefined;
+    texture.image = self.createImage(
         .{ .width = img.width, .height = img.height },
         .r8g8b8a8_srgb,
         .init(.optimal),
         .initMany(&.{ .transfer_dst_bit, .sampled_bit }),
-        .local_bit,
+    );
+    texture.memory = try self.createImageMemory(
+        texture.image,
+        .init(.device_local_bit),
     );
 
-    self.texture_image_memory = try createImageMemory();
-
-    transitionImageLayout(self.texture_image, .r8g8b8a8_srgb, .undefined, .optimal);
+    transitionImageLayout(
+        texture.image,
+        .r8g8b8a8_srgb,
+        .undefined,
+        .optimal,
+    );
     copyBufferToImage(
         staging_buffer,
-        self.texture_image,
-        .{ .width = img.width, .height = img.height, .depth = 0 },
+        texture.image,
+        .{
+            .width = img.width,
+            .height = img.height,
+            .depth = 0,
+        },
     );
     transitionImageLayout(
-        self.texture_image,
+        texture.image,
         .r8g8b8a8_srgb,
         .optimal,
         .shader_read_only_optimal,
     );
+    return texture;
 }
 
 fn createImage(
