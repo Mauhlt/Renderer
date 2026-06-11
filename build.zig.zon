@@ -5,16 +5,16 @@
     .minimum_zig_version = "0.16.0-dev.2676+4e2cec265",
     .dependencies = .{
         .Image = .{
-            .url = "git+https://github.com/Mauhlt/Image.git#d48b55fe07e974668713945d765e69eb991cc325",
-            .hash = "Image-0.0.0-0z0ITFv9fwCOyKzScJS8Hftu-dsW95rdsgFc6RpLaVrq",
+            .url = "git+https://github.com/Mauhlt/Image.git#550fd7b305d9eeb150e2555e0b011628ca5506a5",
+            .hash = "Image-0.0.0-0z0ITDf-fwDtxEknbe6tAGz_LEIDO3VuIeVC_L6g6dua",
         },
         .Vulkan = .{
-            .url = "git+https://github.com/Mauhlt/Vulkan.git#29a3a89e392b05c245eba3e82fff14482d72a64d",
-            .hash = "Vulkan-0.0.0-9v7hoaBxEQApNdAuURymncq4bJSuZPus_2sergWA7Tb2",
+            .url = "git+https://github.com/Mauhlt/Vulkan.git#c49c46db781ca74e0b011f02a15478cb910d7d8a",
+            .hash = "Vulkan-0.0.0-9v7hoaBxEQAt_qQHS8BHWqJ8w7Ijg_-Lf_X_N7whvRvX",
         },
         .Windows = .{
-            .url = "git+https://github.com/Mauhlt/Windows.git#04dd5e84568cbf22e5a0a88cca77e524db63955f",
-            .hash = "Windows-0.0.0-F1HWOVw1AAA_AMTZMal3FdMNnLdGkM-dyqdi4OyHwifr",
+            .url = "git+https://github.com/Mauhlt/Windows.git#28f98ae1295d9ef69d89deb2bb18718a0044bd64",
+            .hash = "Windows-0.0.0-F1HWOXc3AAChFi_k7Zry0uJZgkciV3jxBviMf2uxrdPk",
         },
     },
     .paths = .{
