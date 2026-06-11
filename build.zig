@@ -1,6 +1,100 @@
 const std = @import("std");
 const Dir = std.Io.Dir;
 
+<<<<<<< HEAD
+=======
+ //     _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+  //
+  //     // now register class, create window, etc.
+  //     _ = RegisterClassExA(&wc);
+  //     const hwnd = CreateWindowExA(...);
+  // }
+  //
+  // ---
+  // Is it in user32?
+  //
+  // Yes:
+  // extern "user32" fn SetProcessDpiAwarenessContext(
+  //     value: ?*anyopaque,
+  // ) callconv(std.os.windows.WINAPI) std.os.windows.BOOL;
+  //
+  // ---
+  // Toggle by architecture
+  //
+  // const builtin = @import("builtin");
+  //
+  // pub fn main() void {
+  //     if (comptime builtin.cpu.arch == .aarch64) {
+  //         _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+  //     }
+  //     // ...
+  // }
+  //
+  // builtin.cpu.arch is comptime-known so this compiles to nothing on x86_64 — no runtime branch
+  //
+  //With PER_MONITOR_AWARE_V2 you handle two messages:
+
+  // - WM_DPICHANGED — fires when the window moves to a different-DPI monitor or the user changes display scaling. Windows hands you a
+  // pre-calculated suggested RECT — just use it directly with SetWindowPos.
+  // - WM_SIZE — fires on any resize (user drag, maximize, DPI change follow-up). This is where you flag a Vulkan swapchain rebuild.
+  //
+  // fn wndProc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) callconv(WINAPI) LRESULT {
+  //     switch (msg) {
+  //
+  //         WM_DPICHANGED => {
+  //             // lParam is Windows' suggested rect for the new DPI — use it as-is.
+  //             const rect: *const RECT = @ptrFromInt(@as(usize, @intCast(lparam)));
+  //             _ = SetWindowPos(
+  //                 hwnd,
+  //                 null,
+  //                 rect.left,
+  //                 rect.top,
+  //                 rect.right  - rect.left,
+  //                 rect.bottom - rect.top,
+  //                 SWP_NOZORDER | SWP_NOACTIVATE,
+  //             );
+  //             return 0;
+  //         },
+  //
+  //         WM_SIZE => {
+  //             // low word = new client width, high word = new client height
+  //             const w: u32 = @as(u16, @truncate(lparam));
+  //             const h: u32 = @as(u16, @truncate(lparam >> 16));
+  //             if (w > 0 and h > 0) {
+  //                 needs_swapchain_rebuild = true;
+  //                 framebuffer_width  = w;
+  //                 framebuffer_height = h;
+  //             }
+  //             return 0;
+  //         },
+  //
+  //         WM_DESTROY => {
+  //             PostQuitMessage(0);
+  //             return 0;
+  //         },
+  //
+  //         else => return DefWindowProcA(hwnd, msg, wparam, lparam),
+  //     }
+  // }
+  //
+  // Getting the current scale factor (useful for sizing UI elements):
+  //
+  // extern "user32" fn GetDpiForWindow(hwnd: HWND) callconv(WINAPI) u32;
+  //
+  // const dpi = GetDpiForWindow(hwnd);
+  // const scale = @as(f32, @floatFromInt(dpi)) / 96.0; // 96 = 100%, 144 = 150%
+  //
+  // In your render loop, check the flag before submitting a frame:
+  //
+  // if (needs_swapchain_rebuild) {
+  //     needs_swapchain_rebuild = false;
+  //     rebuildSwapchain(framebuffer_width, framebuffer_height);
+  // }
+  //
+  // The reason you don't act on WM_SIZE directly is that multiple resize messages can fire rapidly (e.g. during a drag). Deferring to the
+  // render loop means you rebuild the swapchain exactly once per stable frame rather than thrashing it mid-drag.
+
+>>>>>>> 5a51e6a93440a4cfaf585dc5d48bf42657819599
 pub fn build(b: *std.Build) !void {
     // set cwd
     const target = b.standardTargetOptions(.{});

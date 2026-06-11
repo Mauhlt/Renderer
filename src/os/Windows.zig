@@ -15,6 +15,15 @@ pub fn init(
     height: u32,
 ) !Windows {
     const instance = win.GetModuleHandleW(null);
+    const dpi_awareness_context: win.DpiAwarenessContext = switch (@import("builtin").target.cpu.arch) {
+        .aarch64, .aarch64_be => .per_monitor_aware_v2,
+        .x86_64, .x86, .x86_16 => .unaware,
+        else => unreachable,
+    };
+    switch (win.SetProcessDpiAwarenessContext(dpi_awareness_context)) {
+        .false => std.debug.print("Set Process DPI Awareness Context Failed.\n", .{}),
+        .true => {},
+    }
     // wide strings
     const class_name = utf8ToUtf16(name);
     const window_title = utf8ToUtf16(title);
@@ -36,6 +45,7 @@ pub fn init(
         .class_name = class_name,
         .small_icon = icon,
     };
+    // window register
     // register
     if (win.RegisterClassExW(&wc) == .null) //
         return error.FailedToRegisterClass;
