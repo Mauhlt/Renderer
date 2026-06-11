@@ -544,11 +544,12 @@ fn createGraphicsPipeline(
     // path to shaders should be passed in
     var sms = [_]vk.ShaderModule{.null} ** 2;
 
+    // TODO: Fix this
     var shader_dir = try std.Io.Dir.openDirAbsolute(io, shader_dir_path, .{});
     defer shader_dir.close(io);
 
     for (shader_paths, 0..) |ext, i| {
-        const path = appendPaths(&filepath_buf, &.{ dirs.shader_dir, ext });
+        const path = appendPaths(&filepath_buf, &.{ shader_dir, ext });
         var data: [4096]u8 = undefined;
         const sc = readShaderSPV(io, path, &data) catch unreachable;
         sms[i] = try self.createShaderModule(sc);

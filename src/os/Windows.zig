@@ -116,7 +116,10 @@ pub fn pollPeek() bool {
             else => {},
         }
         switch (@as(win.Messages, @enumFromInt(msg.msg))) {
-            .nc_destroy, .quit => return false,
+            .nc_destroy, .quit => {
+                // _ = win.PostQuitMessage(0);
+                return false;
+            },
             .destroy, .close => {
                 _ = win.TranslateMessage(&msg);
                 _ = win.DispatchMessageW(&msg);
