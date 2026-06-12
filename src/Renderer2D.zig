@@ -35,7 +35,10 @@ const Semaphores: type = [MAX_FRAMES_IN_FLIGHT]vk.Semaphore;
 const Fences: type = [MAX_FRAMES_IN_FLIGHT]vk.Fence;
 const Vertex = @import("Vertex.zig");
 const FPS = @import("FPS.zig");
-// Total: 4kB
+// Total: 4kB - Used 328 bytes
+// folders
+shader: Dir = undefined,
+texture: Dir = undefined,
 // base
 window: Window = undefined, // 8 bytes
 instance: vk.Instance = .null, // 16 bytes
@@ -54,7 +57,7 @@ swapchain_image_views: ImageViews = .{.null} ** MAX_IMAGES, // 128 bytes
 swapchain_render_pass: vk.RenderPass = .null, // 136 bytes
 // pipeline
 pipeline_layout: vk.PipelineLayout = .null, // 144 bytes
-pipeline_config = .{},
+pipeline_config: vk.GraphicsPipelineCreateInfo = .{}, // Lots of bytes - But not that much
 pipeline: vk.Pipeline = .null, // 152 bytes
 swapchain_framebuffers: Framebuffers = .{.null} ** MAX_IMAGES, // 176 bytes
 // buffers
@@ -82,7 +85,6 @@ pub fn run(
     gpa: std.mem.Allocator,
     exe_dir: []const u8,
 ) !void {
-    // hardcoded now - need to load vertices on the fly
     const vertices = [_]Vertex{
         .{ .pos = .{ -0.5, -0.5 } },
         .{ .pos = .{ 0.5, -0.5 } },
@@ -91,15 +93,25 @@ pub fn run(
     };
     const indices = [_]u16{ 0, 1, 2, 2, 3, 0 };
     var self: @This() = .{};
+
+    const shader_filename = try std.fs.path.join(gpa, &.{ exe_dir, "Shaders" });
+    defer gpa.free(shader_filename);
+    const texture_filename = try std.fs.path.join(gpa, &.{ exe_dir, "Textures" });
+    defer gpa.free(texture_filename);
+    self.shader = try Dir.openDirAbsolute(io, shader_filename, .{});
+    errdefer self.shader.close(io);
+    self.texture = try Dir.openDirAbsolute(io, texture_filename, .{});
+    errdefer self.texture.close(io);
+
     const app_name: [*:0]const u8 = "Glint";
     self.window = try self.initWindow(
         std.mem.span(app_name),
         std.mem.span(app_name),
     );
-    try self.initVulkan(io, gpa, app_name, exe_dir, &vertices, &indices);
-    self.window.show();
-    try self.coreLoop(io, &vertices, &indices);
-    self.deinit();
+    try self.initVulkan(io, gpa, app_name, &vertices, &indices);
+    // self.window.show();
+    // try self.coreLoop(io, &vertices, &indices);
+    self.deinit(io);
 }
 
 fn initWindow(
@@ -120,11 +132,12 @@ fn initVulkan(
     self: *@This(),
     io: std.Io,
     gpa: std.mem.Allocator,
-    exe_dir: []u8,
     app_name: [*:0]const u8,
     vertices: []const Vertex,
     indices: []const u16,
 ) !void {
+    _ = vertices;
+    _ = indices;
     // base
     const ries = [_][*:0]const u8{
         vk.ExtensionName.win32_surface,
@@ -156,24 +169,23 @@ fn initVulkan(
     self.swapchain_framebuffers = try self.createSwapchainFramebuffers();
     // pipeline
     self.pipeline_layout = try self.createPipelineLayout();
-    const shader_files = [_][]const u8{ "/square.vert.spv", "/square.frag.spv" };
-    const shader_dir = try std.fs.path.join(gpa, &.{ exe_dir, "Shaders" });
-    self.pipeline = try self.createGraphicsPipeline(io, shader_dir, shader_files);
+    const shader_filenames = [_][]const u8{ "square.vert.spv", "square.frag.spv" };
+    self.pipeline = try self.createGraphicsPipeline(gpa, io, &shader_filenames);
     // commands + buffers
     self.command_pool = try self.createCommandPool();
-    self.texture_image = try self.createTextureImage(io, gpa, "/BasicArt.bmp");
-    self.texture_image_memory = try self.createTextureImageMemory();
-    const vertex_buffer = try self.createBuffer(Vertex, vertices);
-    self.vertex_buffer = vertex_buffer.buffer;
-    self.vertex_buffer_memory = vertex_buffer.memory;
-    const index_buffer = try self.createBuffer(u16, indices);
-    self.index_buffer = index_buffer.buffer;
-    self.index_buffer_memory = index_buffer.memory;
-    self.command_buffers = try self.createCommandBuffers(MAX_FRAMES_IN_FLIGHT);
-    // sync objects - not needed if image is static
-    self.in_flight_fences = try self.createFences(MAX_FRAMES_IN_FLIGHT);
-    self.image_available_semaphores = try self.createSemaphores(MAX_FRAMES_IN_FLIGHT);
-    self.render_finished_semaphores = try self.createSemaphores(MAX_FRAMES_IN_FLIGHT);
+    // self.texture_image = try self.createTextureImage(io, gpa, "/BasicArt.bmp");
+    // self.texture_image_memory = try self.createTextureImageMemory();
+    // const vertex_buffer = try self.createBuffer(Vertex, vertices);
+    // self.vertex_buffer = vertex_buffer.buffer;
+    // self.vertex_buffer_memory = vertex_buffer.memory;
+    // const index_buffer = try self.createBuffer(u16, indices);
+    // self.index_buffer = index_buffer.buffer;
+    // self.index_buffer_memory = index_buffer.memory;
+    // self.command_buffers = try self.createCommandBuffers(MAX_FRAMES_IN_FLIGHT);
+    // // sync objects - not needed if image is static
+    // self.in_flight_fences = try self.createFences(MAX_FRAMES_IN_FLIGHT);
+    // self.image_available_semaphores = try self.createSemaphores(MAX_FRAMES_IN_FLIGHT);
+    // self.render_finished_semaphores = try self.createSemaphores(MAX_FRAMES_IN_FLIGHT);
 }
 
 fn coreLoop(
@@ -199,7 +211,16 @@ fn coreLoop(
         .handle(.FailedToIdleDevice);
 }
 
-fn deinit(self: *@This()) void {
+fn deinit(self: *@This(), io: std.Io) void {
+    // folders
+    self.shader.close(io);
+    self.texture.close(io);
+    // vulkan
+    self.deinitVulkan();
+}
+
+fn deinitVulkan(self: *@This()) void {
+    // vulkan
     self.destroySwapchain();
     // texture
     // vk.destroyImageView(self.device, self.texture_image_view, null);
@@ -538,20 +559,13 @@ fn createGraphicsPipeline(
     self: *const @This(),
     gpa: std.mem.Allocator,
     io: std.Io,
-    shader_dir_path: []const u8,
-    shader_paths: []const []const u8,
-) (std.mem.Allocator.Error || vk.Errors)!vk.Pipeline {
-    // path to shaders should be passed in
+    shader_filenames: []const []const u8,
+) !vk.Pipeline {
+    _ = gpa;
     var sms = [_]vk.ShaderModule{.null} ** 2;
-
-    // TODO: Fix this
-    var shader_dir = try std.Io.Dir.openDirAbsolute(io, shader_dir_path, .{});
-    defer shader_dir.close(io);
-
-    for (shader_paths, 0..) |ext, i| {
-        const path = appendPaths(&filepath_buf, &.{ shader_dir, ext });
-        var data: [4096]u8 = undefined;
-        const sc = readShaderSPV(io, path, &data) catch unreachable;
+    var data: [4096]u8 = undefined;
+    for (shader_filenames, 0..) |shader_filename, i| {
+        const sc = self.readShaderSPV(io, shader_filename, &data) catch unreachable;
         sms[i] = try self.createShaderModule(sc);
     }
     defer {
@@ -559,7 +573,6 @@ fn createGraphicsPipeline(
             vk.destroyShaderModule(self.device, sms[i], null);
         }
     }
-
     const vert_shader_stage_create_info: vk.PipelineShaderStageCreateInfo = .{
         .stage = .vertex_bit,
         .module = sms[0],
@@ -680,11 +693,12 @@ fn appendPaths(
 }
 
 fn readShaderSPV(
+    self: *const @This(),
     io: std.Io,
-    abs_filepath: []const u8,
+    shader_filename: []const u8,
     data: *[4096]u8,
 ) ![]const u8 {
-    const file = try Dir.openFileAbsolute(io, abs_filepath, .{ .mode = .read_only });
+    const file = try self.shader.openFile(io, shader_filename, .{ .mode = .read_only });
     defer file.close(io);
     const stat = try file.stat(io);
     var reader = file.reader(io, @ptrCast(data));
@@ -910,8 +924,10 @@ fn createTextureImage(
     gpa: std.mem.Allocator,
     filepath: []const u8,
 ) !VulkanImage {
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const fullpath = appendPaths(&buf, &.{ dirs.texture_dir, filepath });
+    _ = filepath;
+    // var buf: [std.fs.max_path_bytes]u8 = undefined;
+    // const fullpath = appendPaths(&buf, &.{ dirs.texture_dir, filepath });
+    const fullpath = "Textures";
 
     var img = try Image.read(io, gpa, fullpath);
     defer img.deinit(gpa);

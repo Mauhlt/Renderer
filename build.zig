@@ -62,35 +62,37 @@ pub fn build(b: *std.Build) !void {
         const src = entry.basename;
         if (!isShaderFile(src)) continue;
         const spv = compileShader(b, b.fmt("{s}/{s}", .{ shader_dir_path, src }));
-        _ = b.addInstallFileWithDir(spv, .bin, b.fmt("Shaders/{s}.spv", .{src}));
+        const install = b.addInstallFileWithDir(spv, .bin, b.fmt("Shaders/{s}.spv", .{src}));
+        b.getInstallStep().dependOn(&install.step);
     }
-    // Add Custom Dirs
-    const sub_paths = [_][]const u8{"src/Textures"};
-    for (sub_paths) |sub_path| {
+    // Add Custom Dirs (Textures, Materials, Animations)
+    const src_dirs = [_][]const u8{"src/Textures"};
+    const sub_paths = [_][]const u8{"Textures"};
+    for (src_dirs, sub_paths) |src_dir, sub_path| {
         b.installDirectory(.{
-            .source_dir = b.path(sub_path),
+            .source_dir = b.path(src_dir),
             .install_dir = .bin,
-            .install_subdir = "",
+            .install_subdir = sub_path,
         });
     }
     // Install
-    // b.installArtifact(exe);
-    // // Create Run Command
-    // const run_step = b.step("run", "Run the app");
-    // const run_cmd = b.addRunArtifact(exe);
-    // run_step.dependOn(&run_cmd.step);
-    // run_cmd.step.dependOn(b.getInstallStep());
-    // // Process Args
-    // if (b.args) |args| {
-    //     run_cmd.addArgs(args);
-    // }
-    // // Build Tests
-    // const exe_tests = b.addTest(.{
-    //     .root_module = exe.root_module,
-    // });
-    // const run_exe_tests = b.addRunArtifact(exe_tests);
-    // const test_step = b.step("test", "Run tests");
-    // test_step.dependOn(&run_exe_tests.step);
+    b.installArtifact(exe);
+    // Create Run Command
+    const run_step = b.step("run", "Run the app");
+    const run_cmd = b.addRunArtifact(exe);
+    run_step.dependOn(&run_cmd.step);
+    run_cmd.step.dependOn(b.getInstallStep());
+    // Process Args
+    if (b.args) |args| {
+        run_cmd.addArgs(args);
+    }
+    // Build Tests
+    const exe_tests = b.addTest(.{
+        .root_module = exe.root_module,
+    });
+    const run_exe_tests = b.addRunArtifact(exe_tests);
+    const test_step = b.step("test", "Run tests");
+    test_step.dependOn(&run_exe_tests.step);
 }
 
 // TODO: impl hot reloading shaders
