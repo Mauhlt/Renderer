@@ -239,33 +239,45 @@ fn deinitDirs(self: *@This(), io: std.Io) void {
 }
 
 fn deinitVulkan(self: *@This()) void {
-    // vulkan
     self.destroySwapchain();
-    // texture
+
+    vk.destroyPipeline(self.device, self.pipeline, null);
+    vk.destroyPipelineLayout(self.device, self.pipeline_layout, null);
+    vk.destroyRenderPass(self.device, self.swapchain_render_pass, null);
+
+    for (0..MAX_FRAMES_IN_FLIGHT) |i| {
+        vk.destroyBuffer(self.device, self.uniform_buffers[i], null);
+        vk.freeMemory(self.device, self.uniform_buffers_memories[i], null);
+    }
+
+    vk.destroyDescriptorPool(self.device, self.descriptor_pool, null);
+
+    vk.destroySampler(self.device, self.texture_sampler, null);
     vk.destroyImageView(self.device, self.texture_image_view, null);
-    self.texture_image.deinit(self.device);
-    // buffers
-    vk.destroyBuffer(self.device, self.vertex_buffer, null);
-    vk.freeMemory(self.device, self.vertex_buffer_memory, null);
+    vk.destroyImage(self.device, self.texture_image, null);
+    vk.freeMemory(self.device, self.texture_image_memory, null);
+
+    vk.destroyDescriptorSetLayout(self.device, self.descriptor_set_layout, null);
+
     vk.destroyBuffer(self.device, self.index_buffer, null);
     vk.freeMemory(self.device, self.index_buffer_memory, null);
-    // sync objects
+
+    vk.destroyBuffer(self.device, self.vertex_buffer, null);
+    vk.freeMemory(self.device, self.vertex_buffer_memory, null);
+
     for (0..MAX_FRAMES_IN_FLIGHT) |i| {
         vk.destroySemaphore(self.device, self.render_finished_semaphores[i], null);
         vk.destroySemaphore(self.device, self.image_available_semaphores[i], null);
         vk.destroyFence(self.device, self.in_flight_fences[i], null);
     }
-    // buffers
+
     vk.destroyCommandPool(self.device, self.command_pool, null);
-    // pipeline
-    vk.destroyPipeline(self.device, self.pipeline, null);
-    vk.destroyPipelineLayout(self.device, self.pipeline_layout, null);
-    // swapchain
-    vk.destroyRenderPass(self.device, self.swapchain_render_pass, null);
-    // base
+
     vk.destroyDevice(self.device, null);
+
     vk.destroySurfaceKHR(self.instance, self.surface, null);
     vk.destroyInstance(self.instance, null);
+
     self.window.deinit();
 }
 
