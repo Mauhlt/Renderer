@@ -54,13 +54,13 @@ swapchain_images: Images = .{.null} ** MAX_IMAGES, // [_]vk.Image{.null} ** MAX_
 swapchain_format: vk.Format = .b8g8r8a8_srgb, // 96 bytes
 swapchain_extent: vk.Extent2D = .{ .width = 640, .height = 480 }, // 104 bytes
 swapchain_image_views: ImageViews = .{.null} ** MAX_IMAGES, // 128 bytes
+swapchain_framebuffers: Framebuffers = .{.null} ** MAX_IMAGES, // 176 bytes
 // pipeline
-swapchain_render_pass: vk.RenderPass = .null, // 136 bytes
+render_pass: vk.RenderPass = .null, // 136 bytes
 descriptor_set_layout: vk.DescriptorSetLayout = .null,
 pipeline_layout: vk.PipelineLayout = .null, // 144 bytes
 pipeline_config: vk.GraphicsPipelineCreateInfo = .{}, // Lots of bytes - But not that much
 pipeline: vk.Pipeline = .null, // 152 bytes
-swapchain_framebuffers: Framebuffers = .{.null} ** MAX_IMAGES, // 176 bytes
 // commands + buffers
 command_pool: vk.CommandPool = .null, // 184 bytes
 
@@ -178,7 +178,8 @@ fn initVulkan(
     self.swapchain_format = ssd.chooseSwapSurfaceFormat().format;
     self.swapchain_extent = ssd.chooseSwapExtent(&self.window);
     self.swapchain_image_views = try self.createSwapchainImageViews();
-    self.swapchain_render_pass = try self.createSwapchainRenderPass();
+    self.swapchain_render_pass = try self.createRenderPass();
+    self.descriptor_set_layout = try self.createDescriptorSetLayout();
     self.swapchain_framebuffers = try self.createSwapchainFramebuffers();
     // pipeline
     self.pipeline_layout = try self.createPipelineLayout();
@@ -578,7 +579,7 @@ fn createDescriptorSets(self: *const @This()) vk.DescirptorSet {
     }
 }
 
-fn createSwapchainRenderPass(self: *const @This()) vk.Errors!vk.RenderPass {
+fn createRenderPass(self: *const @This()) vk.Errors!vk.RenderPass {
     const color_attachments = [_]vk.AttachmentDescription{
         .{
             .format = self.swapchain_format,
@@ -628,7 +629,7 @@ fn createSwapchainRenderPass(self: *const @This()) vk.Errors!vk.RenderPass {
     return render_pass;
 }
 
-fn createDescriptorSetLayout(self: *const @This()) !vk.DescriptorSetLayout {
+fn createDescriptorSetLayout(self: *const @This()) vk.Errors!vk.DescriptorSetLayout {
     const ubo_layout_binding: vk.DescriptorSetLayout = .{
         .binding = 0,
         .descriptor_count = 1,
@@ -659,8 +660,8 @@ fn createDescriptorSetLayout(self: *const @This()) !vk.DescriptorSetLayout {
 
 fn createPipelineLayout(self: *const @This()) vk.Errors!vk.PipelineLayout {
     const create_info: vk.PipelineLayoutCreateInfo = .{
-        .set_layout_count = 0,
-        .p_set_layouts = null,
+        .set_layout_count = 1,
+        .p_set_layouts = &self.descriptor_set_layout,
         .push_constant_range_count = 0,
         .p_push_constant_ranges = null,
     };
