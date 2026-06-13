@@ -54,28 +54,33 @@ swapchain_images: Images = .{.null} ** MAX_IMAGES, // [_]vk.Image{.null} ** MAX_
 swapchain_format: vk.Format = .b8g8r8a8_srgb, // 96 bytes
 swapchain_extent: vk.Extent2D = .{ .width = 640, .height = 480 }, // 104 bytes
 swapchain_image_views: ImageViews = .{.null} ** MAX_IMAGES, // 128 bytes
-swapchain_render_pass: vk.RenderPass = .null, // 136 bytes
 // pipeline
+swapchain_render_pass: vk.RenderPass = .null, // 136 bytes
+descriptor_set_layout: vk.DescriptorSetLayout = .null,
 pipeline_layout: vk.PipelineLayout = .null, // 144 bytes
 pipeline_config: vk.GraphicsPipelineCreateInfo = .{}, // Lots of bytes - But not that much
 pipeline: vk.Pipeline = .null, // 152 bytes
 swapchain_framebuffers: Framebuffers = .{.null} ** MAX_IMAGES, // 176 bytes
-// buffers
+// commands + buffers
 command_pool: vk.CommandPool = .null, // 184 bytes
-// TODO: convert into texture struct - contains image, memory, imageview, buffer, memory, sampler
-texture_image: Texture = .{
-    .image = .null,
-    .memory = .null,
-    .view = .null,
-    .sampler = .null,
-},
-texture_buffer: VulkanBuffer = .{ .buffer = .null, .memory = .null },
-texxture_image_view: vk.ImageView = .null, // 192 bytes
+
+texture_image: vk.Image = .null,
+texture_memory: vk.DeviceMemory = .null,
+texture_image_view: vk.ImageView = .null,
 texture_sampler: vk.Sampler = .null,
+
 vertex_buffer: vk.Buffer = .null, // 200 bytes
 vertex_buffer_memory: vk.DeviceMemory = .null, // 208 bytes
 index_buffer: vk.Buffer = .null, // 216 bytes
 index_buffer_memory: vk.DeviceMemory = .null, // 224 bytes
+
+uniform_buffers: [MAX_FRAMES_IN_FLIGHT]vk.Buffer = [_]vk.Buffer{.null} ** MAX_FRAMES_IN_FLIGHT,
+uniform_buffer_memories: [MAX_FRAMES_IN_FLIGHT]vk.DeviceMemory = [_]vk.DeviceMemory{.null} ** MAX_FRAMES_IN_FLIGHT,
+uniform_buffer_maps: [MAX_FRAMES_IN_FLIGHT]?*anyopaque = [_]?*anyopaque{null} ** MAX_FRAMES_IN_FLIGHT,
+
+descriptor_pool: vk.DescriptorPool = .null,
+descriptor_sets: [MAX_FRAMES_IN_FLIGHT]vk.DescriptorSet = [_]vk.DescriptorSet{.null} ** MAX_FRAMES_IN_FLIGHT,
+
 command_buffers: CommandBuffers = .{.null} ** MAX_FRAMES_IN_FLIGHT, // 232 bytes
 // sync objects
 n_sync_objects: u32 = 0, // 240 bytes
@@ -84,7 +89,7 @@ render_finished_semaphores: Semaphores = .{.null} ** MAX_FRAMES_IN_FLIGHT, // 28
 in_flight_fences: Fences = .{.null} ** MAX_FRAMES_IN_FLIGHT, // 312 bytes
 // misc
 current_frame: u32 = 0, // 320 bytes
-resize: bool = false, // 328 bytes
+framebuffer_resize: bool = false, // 328 bytes
 
 pub fn run(
     io: std.Io,
