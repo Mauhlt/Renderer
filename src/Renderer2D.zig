@@ -628,6 +628,35 @@ fn createSwapchainRenderPass(self: *const @This()) vk.Errors!vk.RenderPass {
     return render_pass;
 }
 
+fn createDescriptorSetLayout(self: *const @This()) !vk.DescriptorSetLayout {
+    const ubo_layout_binding: vk.DescriptorSetLayout = .{
+        .binding = 0,
+        .descriptor_count = 1,
+        .descriptor_type = .uniform_buffer,
+        .p_immutable_samplers = null,
+        .stage_flags = .vertex_bit,
+    };
+
+    const sampler_layout_binding: vk.DescriptorSetLayout = .{
+        .binding = 1,
+        .descriptor_count = 1,
+        .descriptor_type = .combined_image_sampler,
+        .p_immutable_samplers = null,
+        .stage_flags = .fragment_bit,
+    };
+
+    const bindings = [_]vk.DescriptorSetLayout{ ubo_layout_binding, sampler_layout_binding };
+    const create_info: vk.DescriptorSetLayoutCreateInfo = .{
+        .binding_count = @truncate(bindings.len),
+        .p_bindings = &bindings,
+    };
+
+    var layout: vk.DescriptorSetLayout = .null;
+    try vk.createDescriptorSetLayout(self.device, &create_info, null, &layout)
+        .handle(.FailedToCreateDescriptorSetLayout);
+    return layout;
+}
+
 fn createPipelineLayout(self: *const @This()) vk.Errors!vk.PipelineLayout {
     const create_info: vk.PipelineLayoutCreateInfo = .{
         .set_layout_count = 0,
