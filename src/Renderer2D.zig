@@ -36,10 +36,9 @@ const Fences: type = [MAX_FRAMES_IN_FLIGHT]vk.Fence;
 const Vertex = @import("Vertex.zig");
 const FPS = @import("FPS.zig");
 // Total: 4kB - Used 328 bytes
-// folders
 shader: Dir = undefined,
 texture: Dir = undefined,
-// base
+
 window: Window = undefined, // 8 bytes
 instance: vk.Instance = .null, // 16 bytes
 physical_device: vk.PhysicalDevice = .null, // 24 bytes
@@ -47,7 +46,7 @@ surface: vk.SurfaceKHR = .null, // 32 bytes
 device: vk.Device = .null, // 40 bytes
 graphics_queue: vk.Queue = .null, // 48 bytes
 present_queue: vk.Queue = .null, // 54 bytes
-// swapchain
+
 swapchain: vk.SwapchainKHR = .null, // 60 bytes
 n_swapchain_images: u32 = 0, // 64 bytes, max value is 3
 swapchain_images: Images = .{.null} ** MAX_IMAGES, // [_]vk.Image{.null} ** MAX_IMAGES, // 88 bytes
@@ -55,13 +54,13 @@ swapchain_format: vk.Format = .b8g8r8a8_srgb, // 96 bytes
 swapchain_extent: vk.Extent2D = .{ .width = 640, .height = 480 }, // 104 bytes
 swapchain_image_views: ImageViews = .{.null} ** MAX_IMAGES, // 128 bytes
 swapchain_framebuffers: Framebuffers = .{.null} ** MAX_IMAGES, // 176 bytes
-// pipeline
+
 render_pass: vk.RenderPass = .null, // 136 bytes
 descriptor_set_layout: vk.DescriptorSetLayout = .null,
 pipeline_layout: vk.PipelineLayout = .null, // 144 bytes
-pipeline_config: vk.GraphicsPipelineCreateInfo = .{}, // Lots of bytes - But not that much
+pipeline_config: vk.GraphicsPipelineCreateInfo = .{}, // TODO: implement
 pipeline: vk.Pipeline = .null, // 152 bytes
-// commands + buffers
+
 command_pool: vk.CommandPool = .null, // 184 bytes
 
 texture_image: vk.Image = .null,
@@ -82,12 +81,11 @@ descriptor_pool: vk.DescriptorPool = .null,
 descriptor_sets: [MAX_FRAMES_IN_FLIGHT]vk.DescriptorSet = [_]vk.DescriptorSet{.null} ** MAX_FRAMES_IN_FLIGHT,
 
 command_buffers: CommandBuffers = .{.null} ** MAX_FRAMES_IN_FLIGHT, // 232 bytes
-// sync objects
-n_sync_objects: u32 = 0, // 240 bytes
+
 image_available_semaphores: Semaphores = .{.null} ** MAX_FRAMES_IN_FLIGHT, // 264 bytes
 render_finished_semaphores: Semaphores = .{.null} ** MAX_FRAMES_IN_FLIGHT, // 288 bytes
 in_flight_fences: Fences = .{.null} ** MAX_FRAMES_IN_FLIGHT, // 312 bytes
-// misc
+
 current_frame: u32 = 0, // 320 bytes
 framebuffer_resize: bool = false, // 328 bytes
 
@@ -139,6 +137,7 @@ fn initWindow(
     ) catch unreachable;
 }
 
+// TODO: add ability to resize window + blur it on resizing
 // TODO: need to remove vertices + indices - should be a file that is loaded in and used
 // TODO: need  to add ability to pass dir to image
 fn initVulkan(
