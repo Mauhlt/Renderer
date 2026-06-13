@@ -33,7 +33,12 @@ const MAX_FRAMES_IN_FLIGHT: u32 = 2;
 const CommandBuffers: type = [MAX_FRAMES_IN_FLIGHT]vk.CommandBuffer;
 const Semaphores: type = [MAX_FRAMES_IN_FLIGHT]vk.Semaphore;
 const Fences: type = [MAX_FRAMES_IN_FLIGHT]vk.Fence;
+const UniformBuffers: type = [MAX_FRAMES_IN_FLIGHT]vk.Buffer;
+const UniformBufferMemories: type = [MAX_FRAMES_IN_FLIGHT]vk.DeviceMemory;
+const UniformBufferMaps: type = [MAX_FRAMES_IN_FLIGHT]?*anyopaque;
+const DescriptorSets: type = [MAX_FRAMES_IN_FLIGHT]vk.DescriptorSet;
 const Vertex = @import("Vertex.zig");
+const UBO = @import("UniformBufferObject.zig");
 const FPS = @import("FPS.zig");
 // Total: 4kB - Used 328 bytes
 shader: Dir = undefined,
@@ -73,12 +78,12 @@ vertex_buffer_memory: vk.DeviceMemory = .null, // 208 bytes
 index_buffer: vk.Buffer = .null, // 216 bytes
 index_buffer_memory: vk.DeviceMemory = .null, // 224 bytes
 
-uniform_buffers: [MAX_FRAMES_IN_FLIGHT]vk.Buffer = [_]vk.Buffer{.null} ** MAX_FRAMES_IN_FLIGHT,
-uniform_buffer_memories: [MAX_FRAMES_IN_FLIGHT]vk.DeviceMemory = [_]vk.DeviceMemory{.null} ** MAX_FRAMES_IN_FLIGHT,
-uniform_buffer_maps: [MAX_FRAMES_IN_FLIGHT]?*anyopaque = [_]?*anyopaque{null} ** MAX_FRAMES_IN_FLIGHT,
+uniform_buffers: UniformBuffers = [_]vk.Buffer{.null} ** MAX_FRAMES_IN_FLIGHT,
+uniform_buffer_memories: UniformBufferMemories = [_]vk.DeviceMemory{.null} ** MAX_FRAMES_IN_FLIGHT,
+uniform_buffer_maps: UniformBufferMaps = [_]?*anyopaque{null} ** MAX_FRAMES_IN_FLIGHT,
 
 descriptor_pool: vk.DescriptorPool = .null,
-descriptor_sets: [MAX_FRAMES_IN_FLIGHT]vk.DescriptorSet = [_]vk.DescriptorSet{.null} ** MAX_FRAMES_IN_FLIGHT,
+descriptor_sets: DescriptorSets = [_]vk.DescriptorSet{.null} ** MAX_FRAMES_IN_FLIGHT,
 
 command_buffers: CommandBuffers = .{.null} ** MAX_FRAMES_IN_FLIGHT, // 232 bytes
 
@@ -150,7 +155,7 @@ fn initVulkan(
 ) !void {
     _ = vertices;
     _ = indices;
-    // base
+
     const ries = [_][*:0]const u8{
         vk.ExtensionName.win32_surface,
         vk.ExtensionName.surface,
@@ -168,7 +173,7 @@ fn initVulkan(
     const qfi: QFI = try .init(self.physical_device, self.surface);
     self.graphics_queue = self.createQueue(qfi.graphics_family.?);
     self.present_queue = self.createQueue(qfi.present_family.?);
-    // swapchain
+
     self.swapchain = try self.createSwapchain();
     errdefer vk.destroySwapchainKHR(self.device, self.swapchain, null);
     self.n_swapchain_images = try self.getNumSwapchainImages();
@@ -180,28 +185,36 @@ fn initVulkan(
     self.swapchain_render_pass = try self.createRenderPass();
     self.descriptor_set_layout = try self.createDescriptorSetLayout();
     self.swapchain_framebuffers = try self.createSwapchainFramebuffers();
-    // pipeline
+
     self.pipeline_layout = try self.createPipelineLayout();
     const shader_filenames = [_][]const u8{ "square.vert.spv", "square.frag.spv" };
     self.pipeline = try self.createGraphicsPipeline(gpa, io, &shader_filenames);
-    // commands + buffers
+
     self.command_pool = try self.createCommandPool();
     self.texture_image = try self.createTextureImage(io, gpa, "BasicArt.bmp");
     self.texture_image_view = try self.createTextureImageView();
     self.texture_sampler = try self.createTextureSampler();
-    // self.texture_buffer = try self.createTextureBuffer();
-    // self.texture_image_memory = try self.createTextureImageMemory();
-    // const vertex_buffer = try self.createBuffer(Vertex, vertices);
-    // self.vertex_buffer = vertex_buffer.buffer;
-    // self.vertex_buffer_memory = vertex_buffer.memory;
-    // const index_buffer = try self.createBuffer(u16, indices);
-    // self.index_buffer = index_buffer.buffer;
-    // self.index_buffer_memory = index_buffer.memory;
-    // self.command_buffers = try self.createCommandBuffers(MAX_FRAMES_IN_FLIGHT);
-    // // sync objects - not needed if image is static
-    // self.in_flight_fences = try self.createFences(MAX_FRAMES_IN_FLIGHT);
-    // self.image_available_semaphores = try self.createSemaphores(MAX_FRAMES_IN_FLIGHT);
-    // self.render_finished_semaphores = try self.createSemaphores(MAX_FRAMES_IN_FLIGHT);
+
+    const vertex_buffer = try self.createBuffer(Vertex, vertices);
+    self.vertex_buffer = vertex_buffer.buffer;
+    self.vertex_buffer_memory = vertex_buffer.memory;
+
+    const index_buffer = try self.createBuffer(u16, indices);
+    self.index_buffer = index_buffer.buffer;
+    self.index_buffer_memory = index_buffer.memory;
+
+    self.uniform_buffers = self.createUniformBuffers();
+    self.uniform_buffer_memories = self.createUniformBufferMemories();
+    self.uniform_buffer_maps = self.createUniformBufferMaps();
+
+    self.descriptor_pool = try self.createDescriptorPool();
+    self.descriptor_sets = try self.createDescriptorSets();
+
+    self.command_buffers = try self.createCommandBuffers(MAX_FRAMES_IN_FLIGHT);
+
+    self.in_flight_fences = try self.createFences(MAX_FRAMES_IN_FLIGHT);
+    self.image_available_semaphores = try self.createSemaphores(MAX_FRAMES_IN_FLIGHT);
+    self.render_finished_semaphores = try self.createSemaphores(MAX_FRAMES_IN_FLIGHT);
 }
 
 fn coreLoop(
@@ -531,7 +544,7 @@ fn createSwapchainImageViews(self: *const @This()) vk.Errors!ImageViews {
     return views;
 }
 
-fn createDescriptorSetLayout(self: *const @This()) !vk.DescriptorSetLayout {
+fn createDescriptorSetLayout(self: *const @This()) vk.Errors!vk.DescriptorSetLayout {
     const sampler_layout_binding: vk.DescriptorSetLayoutBinding = .{
         .binding = 1,
         .descriptor_count = 1,
@@ -547,47 +560,6 @@ fn createDescriptorSetLayout(self: *const @This()) !vk.DescriptorSetLayout {
     try vk.createDescriptorSetLayout(self.device, &create_info, null, &set_layout)
         .handle(.FailedToCreateDescriptorSetLayout);
     return set_layout;
-}
-
-fn createDescriptorPool(self: *const @This()) !vk.DescriptorPool {
-    const descriptor_pool_size: vk.DescriptorPoolSize = .{
-        .type = .combined_image_sampler,
-        .descriptor_count = MAX_FRAMES_IN_FLIGHT,
-    };
-    const pool_sizes = [_]vk.DescriptorPool{descriptor_pool_size};
-    const create_info: vk.DescriptorPoolCreateInfo = .{
-        .pool_size_count = @truncate(pool_sizes.len),
-        .p_pool_sizes = &pool_sizes,
-        .max_sets = MAX_FRAMES_IN_FLIGHT,
-    };
-    var pool: vk.DescriptorPool = .null;
-    try vk.createDescriptorPool(self.device, &create_info, null, &pool)
-        .handle(.FailedToCreateDescriptorPool);
-    return pool;
-}
-
-fn createDescriptorSets(self: *const @This()) vk.DescirptorSet {
-    for (0..MAX_FRAMES_IN_FLIGHT) |i| {
-        const buffer_info: vk.DescriptorBufferInfo = .{
-            .buffer = .shader_read_only_optimal,
-            .image_view = self.texture_image_view,
-            .sampler = self.texture_sampler,
-        };
-
-        const descriptor_writes = [_]vk.WriteDescriptorSet{
-            .{
-                .dst_set = descriptor_sets[i],
-                .dst_binding = 1,
-                .dst_array_element = 0,
-                .descriptor_type = .combined_image_sampler,
-                .descriptor_count = 1,
-                .p_image_info = &image_info,
-            },
-        };
-
-        try vk.updateDescriptorSets(self.device, @truncate(descriptor_writes.len), &descriptor_writes, 0, null)
-            .handle(.FailedToUpdateDescriptorSets);
-    }
 }
 
 fn createRenderPass(self: *const @This()) vk.Errors!vk.RenderPass {
@@ -1320,6 +1292,73 @@ fn createTextureSampler(self: *const @This()) !vk.Sampler {
     try vk.createSampler(self.device, &create_info, null, &sampler)
         .handle(.FailedToCreateTextureSampler);
     return sampler;
+}
+
+fn createUniformBuffers(self: *const @This()) !void {
+    const size: vk.DeviceSize = @sizeOf(UniformBufferObject);
+    var uniform_buffers = [_]vk.Buffer{.null} ** MAX_FRAMES_IN_FLIGHT;
+    for (0..MAX_FRAMES_IN_FLIGHT) |i| {
+        uniform_buffers[i] = try self.createBuffer();
+    }
+    return uniform_buffers;
+}
+
+fn createDescriptorPool() vk.Errors!vk.DescriptorPool {
+    const pool_sizes = [_]vk.DescriptorPoolSize{
+        .{
+            .type = .uniform_buffer,
+            .descriptor_count = @truncate(self.uniform_buffers.len),
+        },
+        .{
+            .type = .combined_image_sampler,
+            .descriptor_count = @truncate(self.descriptor_sets.len),
+        },
+    };
+    const create_info: vk.DescriptorPoolCreateInfo = .{
+        .pool_size_count = @truncate(pool_sizes.len),
+        .p_pool_sizes = &pool_sizes,
+        .max_sets = MAX_FRAMES_IN_FLIGHT,
+    };
+    var pool: vk.DescriptorPool = .null;
+    try vk.createDescriptorPool(self.device, &create_info, null, &pool)
+        .handle(.FailedToCreateDescriptorPool);
+}
+
+fn createDescriptorSets(self: *const @This()) vk.Errors!DescriptorSets {
+    var sets: DescriptorSets = .{};
+
+    const alloc_info: vk.DescriptorSetAllocateInfo = .{
+        .descriptor_pool = self.descriptor_pool,
+        .descriptor_set_count = @truncate(layouts.len),
+        .p_set_layouts = &layouts,
+    };
+
+    try vk.allocateDescriptorSets(self.device, &alloc_info, &sets)
+        .handle(.FailedToAllocateDescriptorSets);
+
+    for (0..sets.len) |i| {
+        const buffer_info: vk.DescriptorBufferInfo = .{
+            .buffer = self.uniform_buffers[i],
+            .offset = 0,
+            .range = @sizeOf(UBO),
+        };
+
+        const image_info: vk.DescriptorImageInfo = .{
+            .image_layout = .shader_read_only_optimal,
+            .image_view = self.texture_image_view,
+            .sampler = self.texture_sampler,
+        };
+
+        const writes = [_]vk.DescriptorSetWrite{
+            .{
+                .dst_set = self.descriptor_sets[i],
+                .dst_binding = 0,
+                .dst_array_element = 0,
+                .descriptor_type = .uniform_buffer,
+                .
+            }
+        }
+    }
 }
 
 fn createCommandBuffers(
