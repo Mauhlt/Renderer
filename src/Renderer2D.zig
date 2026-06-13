@@ -62,10 +62,16 @@ pipeline: vk.Pipeline = .null, // 152 bytes
 swapchain_framebuffers: Framebuffers = .{.null} ** MAX_IMAGES, // 176 bytes
 // buffers
 command_pool: vk.CommandPool = .null, // 184 bytes
-texture_image: vk.Image = .null,
-texture_buffer: vk.Buffer = .null,
-texture_buffer_memory: vk.DeviceMemory = .null,
+// TODO: convert into texture struct - contains image, memory, imageview, buffer, memory, sampler
+texture_image: Texture = .{
+    .image = .null,
+    .memory = .null,
+    .view = .null,
+    .sampler = .null,
+},
+texture_buffer: VulkanBuffer = .{ .buffer = .null, .memory = .null },
 texxture_image_view: vk.ImageView = .null, // 192 bytes
+texture_sampler: vk.Sampler = .null,
 vertex_buffer: vk.Buffer = .null, // 200 bytes
 vertex_buffer_memory: vk.DeviceMemory = .null, // 208 bytes
 index_buffer: vk.Buffer = .null, // 216 bytes
@@ -96,10 +102,11 @@ pub fn run(
 
     const shader_filename = try std.fs.path.join(gpa, &.{ exe_dir, "Shaders" });
     defer gpa.free(shader_filename);
-    const texture_filename = try std.fs.path.join(gpa, &.{ exe_dir, "Textures" });
-    defer gpa.free(texture_filename);
     self.shader = try Dir.openDirAbsolute(io, shader_filename, .{});
     errdefer self.shader.close(io);
+
+    const texture_filename = try std.fs.path.join(gpa, &.{ exe_dir, "Textures" });
+    defer gpa.free(texture_filename);
     self.texture = try Dir.openDirAbsolute(io, texture_filename, .{});
     errdefer self.texture.close(io);
 
@@ -128,6 +135,7 @@ fn initWindow(
 }
 
 // TODO: need to remove vertices + indices - should be a file that is loaded in and used
+// TODO: need  to add ability to pass dir to image
 fn initVulkan(
     self: *@This(),
     io: std.Io,
@@ -173,7 +181,10 @@ fn initVulkan(
     self.pipeline = try self.createGraphicsPipeline(gpa, io, &shader_filenames);
     // commands + buffers
     self.command_pool = try self.createCommandPool();
-    // self.texture_image = try self.createTextureImage(io, gpa, "/BasicArt.bmp");
+    self.texture_image = try self.createTextureImage(io, gpa, "BasicArt.bmp");
+    self.texture_image_view = try self.createTextureImageView();
+    self.texture_sampler = try self.createTextureSampler();
+    // self.texture_buffer = try self.createTextureBuffer();
     // self.texture_image_memory = try self.createTextureImageMemory();
     // const vertex_buffer = try self.createBuffer(Vertex, vertices);
     // self.vertex_buffer = vertex_buffer.buffer;
@@ -212,20 +223,21 @@ fn coreLoop(
 }
 
 fn deinit(self: *@This(), io: std.Io) void {
-    // folders
+    self.deinitDirs(io);
+    self.deinitVulkan();
+}
+
+fn deinitDirs(self: *@This(), io: std.Io) void {
     self.shader.close(io);
     self.texture.close(io);
-    // vulkan
-    self.deinitVulkan();
 }
 
 fn deinitVulkan(self: *@This()) void {
     // vulkan
     self.destroySwapchain();
     // texture
-    // vk.destroyImageView(self.device, self.texture_image_view, null);
-    // vk.destroyImage(self.device, self.texture_image, null);
-    // vk.freeMemory(self.device, self.texture_image_memory, null);
+    vk.destroyImageView(self.device, self.texture_image_view, null);
+    self.texture_image.deinit(self.device);
     // buffers
     vk.destroyBuffer(self.device, self.vertex_buffer, null);
     vk.freeMemory(self.device, self.vertex_buffer_memory, null);
@@ -307,11 +319,18 @@ fn isDeviceSuitable(
     vk.getPhysicalDeviceProperties(physical_device, &props);
     var feats: vk.PhysicalDeviceFeatures = undefined;
     vk.getPhysicalDeviceFeatures(physical_device, &feats);
-    const qfi = QFI.init(physical_device, surface) catch return false;
-    const ssd = SSD.init(physical_device, surface) catch return false;
+    const qfi = QFI.init(physical_device, surface) catch |err| {
+        log.debug("{s}", .{@errorName(err)});
+        return false;
+    };
+    const ssd = SSD.init(physical_device, surface) catch |err| {
+        log.debug("{s}", .{@errorName(err)});
+        return false;
+    };
     return qfi.isComplete() and
         checkDeviceExtensionSupport(physical_device, rdes) and
-        ssd.isComplete();
+        ssd.isComplete() and
+        feats.sampler_anisotropy == .true;
 }
 
 fn checkDeviceExtensionSupport(
@@ -342,6 +361,7 @@ fn createSurface(self: *const @This()) vk.Errors!vk.SurfaceKHR {
         //     try vk.createXlibSurfaceKHR(self.instance, &create_info, null, &surface)
         //         .handle(.FailedToCreateSurface);
         // },
+        // .macos => {},
         else => unreachable,
     }
     return surface;
@@ -366,7 +386,9 @@ fn createLogicalDevice(
             .queue_family_index = qfi.present_family.?,
         },
     };
-    var feats: vk.PhysicalDeviceFeatures = .{};
+    var feats: vk.PhysicalDeviceFeatures = .{
+        .sampler_anisotropy = .true,
+    };
     const exts = ExtensionProperties.initDevice(self.physical_device) catch
         return vk.Errors.FailedToEnumerateDeviceExtensions;
     _ = exts;
@@ -490,6 +512,65 @@ fn createSwapchainImageViews(self: *const @This()) vk.Errors!ImageViews {
         );
     }
     return views;
+}
+
+fn createDescriptorSetLayout(self: *const @This()) !vk.DescriptorSetLayout {
+    const sampler_layout_binding: vk.DescriptorSetLayoutBinding = .{
+        .binding = 1,
+        .descriptor_count = 1,
+        .descriptor_type = .combined_image_sampler,
+        .stage_flags = .fragment_bit,
+    };
+    const bindings = [_]vk.DescriptorSetLayoutBinding{sampler_layout_binding};
+    const create_info: vk.DescriptorSetLayoutCreateInfo = .{
+        .binding_count = @truncate(bindings.len),
+        .p_bindings = &bindings,
+    };
+    var set_layout: vk.DescriptorSetLayout = .null;
+    try vk.createDescriptorSetLayout(self.device, &create_info, null, &set_layout)
+        .handle(.FailedToCreateDescriptorSetLayout);
+    return set_layout;
+}
+
+fn createDescriptorPool(self: *const @This()) !vk.DescriptorPool {
+    const descriptor_pool_size: vk.DescriptorPoolSize = .{
+        .type = .combined_image_sampler,
+        .descriptor_count = MAX_FRAMES_IN_FLIGHT,
+    };
+    const pool_sizes = [_]vk.DescriptorPool{descriptor_pool_size};
+    const create_info: vk.DescriptorPoolCreateInfo = .{
+        .pool_size_count = @truncate(pool_sizes.len),
+        .p_pool_sizes = &pool_sizes,
+        .max_sets = MAX_FRAMES_IN_FLIGHT,
+    };
+    var pool: vk.DescriptorPool = .null;
+    try vk.createDescriptorPool(self.device, &create_info, null, &pool)
+        .handle(.FailedToCreateDescriptorPool);
+    return pool;
+}
+
+fn createDescriptorSets(self: *const @This()) vk.DescirptorSet {
+    for (0..MAX_FRAMES_IN_FLIGHT) |i| {
+        const buffer_info: vk.DescriptorBufferInfo = .{
+            .buffer = .shader_read_only_optimal,
+            .image_view = self.texture_image_view,
+            .sampler = self.texture_sampler,
+        };
+
+        const descriptor_writes = [_]vk.WriteDescriptorSet{
+            .{
+                .dst_set = descriptor_sets[i],
+                .dst_binding = 1,
+                .dst_array_element = 0,
+                .descriptor_type = .combined_image_sampler,
+                .descriptor_count = 1,
+                .p_image_info = &image_info,
+            },
+        };
+
+        try vk.updateDescriptorSets(self.device, @truncate(descriptor_writes.len), &descriptor_writes, 0, null)
+            .handle(.FailedToUpdateDescriptorSets);
+    }
 }
 
 fn createSwapchainRenderPass(self: *const @This()) vk.Errors!vk.RenderPass {
@@ -813,9 +894,18 @@ const VulkanBuffer = struct {
     buffer: vk.Buffer,
     memory: vk.DeviceMemory,
 };
-const VulkanImage = struct {
+
+const Texture = struct {
     image: vk.Image,
     memory: vk.DeviceMemory,
+    view: vk.ImageView,
+    sampler: vk.Sampler,
+
+    pub fn deinit(self: *@This(), device: vk.Device) void {
+        vk.destroyImage(device, self.image, null);
+        vk.freeMemory(device, self.memory, null);
+        vk.destroyImageView(device, self.image_view, null);
+    }
 };
 
 fn createBuffer(
@@ -902,19 +992,23 @@ fn beginSingleTimeCommands(self: *const @This()) vk.Errors!vk.CommandBuffer {
     var command_buffer: vk.CommandBuffer = .null;
     try vk.allocateCommandBuffers(self.device, &alloc_info, &command_buffer)
         .handle(.FailedToAllocateCommandBuffers);
+    return command_buffer;
 }
 
 fn endSingleTimeCommands(
     self: *const @This(),
     command_buffer: vk.CommandBuffer,
-) vk.Errors!void {
-    vk.endCommandBuffer(command_buffer);
+) !void {
+    try vk.endCommandBuffer(command_buffer)
+        .handle(.FailedToEndCommandBuffer);
     const submit_info: vk.SubmitInfo = .{
         .command_buffer_count = 1,
         .p_command_buffers = &command_buffer,
     };
-    vk.queueSubmit(self.graphics_queue, 1, &submit_info, .null);
-    vk.queueWaitIdle(self.graphics_queue);
+    try vk.queueSubmit(self.graphics_queue, 1, &submit_info, .null)
+        .handle(.FailedToSubmitQueue);
+    try vk.queueWaitIdle(self.graphics_queue)
+        .handle(.FailedToIdleQueue);
     vk.freeCommandBuffers(self.device, self.command_pool, 1, &command_buffer);
 }
 
@@ -922,18 +1016,20 @@ fn createTextureImage(
     self: *const @This(),
     io: std.Io,
     gpa: std.mem.Allocator,
-    filepath: []const u8,
+    filename: []const u8,
 ) !VulkanImage {
-    _ = filepath;
-    // var buf: [std.fs.max_path_bytes]u8 = undefined;
-    // const fullpath = appendPaths(&buf, &.{ dirs.texture_dir, filepath });
-    const fullpath = "Textures";
-
-    var img = try Image.read(io, gpa, fullpath);
+    // TODO: fix image so that read can be written as:  var img: Image = try .read();
+    var img = try Image.read(.{
+        .io = io,
+        .gpa = gpa,
+        .dir = self.texture,
+        .path = filename,
+        .path_type = .dir,
+    });
     defer img.deinit(gpa);
 
+    // TODO: should be changed to match img dimensions
     const image_size: vk.DeviceSize = img.width * img.height * 3;
-
     const staging_buffer = try self.createVulkanBuffer(image_size, .init(.transfer_src_bit));
     defer vk.destroyBuffer(self.device, staging_buffer, null);
 
@@ -951,7 +1047,7 @@ fn createTextureImage(
     }
 
     var texture: VulkanImage = undefined;
-    texture.image = self.createImage(
+    texture.image = try self.createImage(
         .{ .width = img.width, .height = img.height },
         .r8g8b8a8_srgb,
         .init(.optimal),
@@ -962,13 +1058,13 @@ fn createTextureImage(
         .init(.device_local_bit),
     );
 
-    transitionImageLayout(
+    try self.transitionImageLayout(
         texture.image,
         .r8g8b8a8_srgb,
         .undefined,
-        .optimal,
+        .transfer_dst_optimal,
     );
-    copyBufferToImage(
+    try self.copyBufferToImage(
         staging_buffer,
         texture.image,
         .{
@@ -977,10 +1073,10 @@ fn createTextureImage(
             .depth = 0,
         },
     );
-    transitionImageLayout(
+    try self.transitionImageLayout(
         texture.image,
         .r8g8b8a8_srgb,
-        .optimal,
+        .transfer_dst_optimal,
         .shader_read_only_optimal,
     );
     return texture;
@@ -1027,19 +1123,21 @@ fn createImageMemory(
     var memory: vk.DeviceMemory = .null;
     try vk.allocateMemory(self.device, &alloc_info, null, &memory)
         .handle(.FailedToAllocateImageMemory);
-    vk.bindImageMemory(self.device, image, memory, 0);
+    try vk.bindImageMemory(self.device, image, memory, 0)
+        .handle(.FailedToBindImageMemory);
     return memory;
 }
 
 fn transitionImageLayout(
+    self: *const @This(),
     image: vk.Image,
     format: vk.Format,
     old_layout: vk.ImageLayout,
     new_layout: vk.ImageLayout,
 ) !void {
     _ = format;
-    const command_buffer = try beginSingleTimeCommands();
-    defer endSingleTimeCommands(command_buffer);
+    const command_buffer = try self.beginSingleTimeCommands();
+    errdefer self.endSingleTimeCommands(command_buffer) catch unreachable;
 
     var barrier: vk.ImageMemoryBarrier = .{
         .old_layout = old_layout,
@@ -1048,7 +1146,7 @@ fn transitionImageLayout(
         .dst_queue_family_index = vk.QueueFamilyIgnored,
         .image = image,
         .subresource_range = .{
-            .aspect_mask = .color_bit,
+            .aspect_mask = .init(.color_bit),
             .base_mip_level = 0,
             .level_count = 1,
             .base_array_layer = 0,
@@ -1059,19 +1157,19 @@ fn transitionImageLayout(
     var src_stage: vk.PipelineStageFlags = undefined;
     var dst_stage: vk.PipelineStageFlags = undefined;
     if (old_layout == .undefined and new_layout == .transfer_dst_optimal) {
-        barrier.src_access_mask = 0;
-        barrier.dst_access_mask = .transfer_write_bit;
+        barrier.src_access_mask = .init(.none);
+        barrier.dst_access_mask = .init(.transfer_write_bit);
 
-        src_stage = .top_of_pipe_bit;
-        dst_stage = .transfer_bit;
+        src_stage = .init(.top_of_pipe_bit);
+        dst_stage = .init(.transfer_bit);
     } else if (old_layout == .transfer_dst_optimal and
         new_layout == .shader_read_only_optimal)
     {
-        barrier.src_access_mask = .transfer_write_bit;
-        barrier.dst_access_mask = .shader_read_bit;
+        barrier.src_access_mask = .init(.transfer_write_bit);
+        barrier.dst_access_mask = .init(.shader_read_bit);
 
-        src_stage = .transfer_bit;
-        dst_stage = .fragment_shader_bit;
+        src_stage = .init(.transfer_bit);
+        dst_stage = .init(.fragment_shader_bit);
     } else {
         return vk.Errors.UnsupportedLayoutTransition;
     }
@@ -1080,7 +1178,7 @@ fn transitionImageLayout(
         command_buffer,
         src_stage,
         dst_stage,
-        0,
+        .init(.null),
         0,
         null,
         0,
@@ -1088,28 +1186,30 @@ fn transitionImageLayout(
         1,
         &barrier,
     );
+    try self.endSingleTimeCommands(command_buffer);
 }
 
 fn copyBufferToImage(
+    self: *const @This(),
     buffer: vk.Buffer,
     image: vk.Image,
     image_extent: vk.Extent3D,
 ) !void {
-    const command_buffer = try beginSingleTimeCommands();
-    defer endSingleTimeCommands(command_buffer);
+    const command_buffer = try self.beginSingleTimeCommands();
+    errdefer self.endSingleTimeCommands(command_buffer) catch unreachable;
 
     const region: vk.BufferImageCopy = .{
         .buffer_offset = 0,
         .buffer_row_length = 0,
-        .buffer_iamge_height = 0,
+        .buffer_image_height = 0,
         .image_subresource = .{
-            .aspect_mask = .color_bit,
+            .aspect_mask = .init(.color_bit),
             .mip_level = 0,
             .base_array_layer = 0,
             .layer_count = 1,
-            .image_offset = .{ .x = 0, .y = 0, .z = 0 },
-            .image_extent = image_extent,
         },
+        .image_offset = .{ .x = 0, .y = 0, .z = 0 },
+        .image_extent = image_extent,
     };
     vk.cmdCopyBufferToImage(
         command_buffer,
@@ -1119,6 +1219,7 @@ fn copyBufferToImage(
         1,
         &region,
     );
+    try self.endSingleTimeCommands(command_buffer);
 }
 
 fn createImageView(
@@ -1145,9 +1246,34 @@ fn createImageView(
 }
 
 fn createTextureImageView(self: *const @This()) vk.Errors!vk.ImageView {
-    _ = self;
-    // const tex_img = load("tex img path");
-    // return self.createImageView(tex_img, .r8g8b8a8_srgb);
+    return self.createImageView(self.texture_image.image, .r8g8b8a8_srgb);
+}
+
+fn createTextureSampler(self: *const @This()) !vk.Sampler {
+    var props: vk.PhysicalDeviceProperties = .{};
+    vk.getPhysicalDeviceProperties(self.physical_device, &props);
+
+    const create_info: vk.SamplerCreateInfo = .{
+        .mag_filter = .linear,
+        .min_filter = .linear,
+        .address_mode_u = .repeat,
+        .address_mode_v = .repeat,
+        .address_mode_w = .repeat,
+        .anisotropy_enable = .true,
+        .max_anisotropy = props.limits.max_sampler_anisotropy,
+        .border_color = .int_opaque_black,
+        .unnormalized_coordinates = .false,
+        .compare_enable = .false,
+        .compare_op = .always,
+        .mipmap_mode = .linear,
+        .miplod_bias = 0,
+        .min_lod = 0,
+        .max_lod = 0,
+    };
+    var sampler: vk.Sampler = .null;
+    try vk.createSampler(self.device, &create_info, null, &sampler)
+        .handle(.FailedToCreateTextureSampler);
+    return sampler;
 }
 
 fn createCommandBuffers(
