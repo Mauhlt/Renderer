@@ -153,6 +153,8 @@ fn initVulkan(
     vertices: []const Vertex,
     indices: []const u16,
 ) !void {
+    _ = io;
+    _ = gpa;
     _ = vertices;
     _ = indices;
 
@@ -160,61 +162,84 @@ fn initVulkan(
         vk.ExtensionName.win32_surface,
         vk.ExtensionName.surface,
     };
+
     self.instance = try createInstance(app_name, &ries);
     errdefer vk.destroyInstance(self.instance, null);
+
     self.surface = try self.createSurface();
     errdefer vk.destroySurfaceKHR(self.instance, self.surface, null);
+
     const rdes = [_][*:0]const u8{
         vk.ExtensionName.swapchain,
     };
     self.physical_device = try self.pickPhysicalDevice(&rdes);
+
     self.device = try self.createLogicalDevice(&rdes);
     errdefer vk.destroyDevice(self.device, null);
+
     const qfi: QFI = try .init(self.physical_device, self.surface);
     self.graphics_queue = self.createQueue(qfi.graphics_family.?);
     self.present_queue = self.createQueue(qfi.present_family.?);
 
     self.swapchain = try self.createSwapchain();
     errdefer vk.destroySwapchainKHR(self.device, self.swapchain, null);
+
     self.n_swapchain_images = try self.getNumSwapchainImages();
     self.swapchain_images = try self.createSwapchainImages();
+
     const ssd: SSD = try .init(self.physical_device, self.surface);
     self.swapchain_format = ssd.chooseSwapSurfaceFormat().format;
     self.swapchain_extent = ssd.chooseSwapExtent(&self.window);
+
     self.swapchain_image_views = try self.createSwapchainImageViews();
-    self.swapchain_render_pass = try self.createRenderPass();
-    self.descriptor_set_layout = try self.createDescriptorSetLayout();
+    errdefer {
+        for (0..MAX_IMAGES) |i| {
+            vk.destroyImageView(self.device, self.swapchain_image_views[i], null);
+        }
+    }
+
     self.swapchain_framebuffers = try self.createSwapchainFramebuffers();
+    errdefer {
+        for (0..MAX_IMAGES) |i| {
+            vk.destroyFramebuffer(self.device, self.swapchain_framebuffers[i], null);
+        }
+    }
 
-    self.pipeline_layout = try self.createPipelineLayout();
-    const shader_filenames = [_][]const u8{ "square.vert.spv", "square.frag.spv" };
-    self.pipeline = try self.createGraphicsPipeline(gpa, io, &shader_filenames);
+    self.swapchain_render_pass = try self.createRenderPass();
+    errdefer vk.destroyRenderPass(self.device, self.swapchain_render_pass, null);
 
-    self.command_pool = try self.createCommandPool();
-    self.texture_image = try self.createTextureImage(io, gpa, "BasicArt.bmp");
-    self.texture_image_view = try self.createTextureImageView();
-    self.texture_sampler = try self.createTextureSampler();
+    self.descriptor_set_layout = try self.createDescriptorSetLayout();
+    errdefer vk.destroyDescriptorSetLayout(self.device, self.descriptor_set_layout, null);
 
-    const vertex_buffer = try self.createBuffer(Vertex, vertices);
-    self.vertex_buffer = vertex_buffer.buffer;
-    self.vertex_buffer_memory = vertex_buffer.memory;
-
-    const index_buffer = try self.createBuffer(u16, indices);
-    self.index_buffer = index_buffer.buffer;
-    self.index_buffer_memory = index_buffer.memory;
-
-    self.uniform_buffers = self.createUniformBuffers();
-    self.uniform_buffer_memories = self.createUniformBufferMemories();
-    self.uniform_buffer_maps = self.createUniformBufferMaps();
-
-    self.descriptor_pool = try self.createDescriptorPool();
-    self.descriptor_sets = try self.createDescriptorSets();
-
-    self.command_buffers = try self.createCommandBuffers(MAX_FRAMES_IN_FLIGHT);
-
-    self.in_flight_fences = try self.createFences(MAX_FRAMES_IN_FLIGHT);
-    self.image_available_semaphores = try self.createSemaphores(MAX_FRAMES_IN_FLIGHT);
-    self.render_finished_semaphores = try self.createSemaphores(MAX_FRAMES_IN_FLIGHT);
+    // self.pipeline_layout = try self.createPipelineLayout();
+    // const shader_filenames = [_][]const u8{ "square.vert.spv", "square.frag.spv" };
+    // self.pipeline = try self.createGraphicsPipeline(gpa, io, &shader_filenames);
+    //
+    // self.command_pool = try self.createCommandPool();
+    // self.texture_image = try self.createTextureImage(io, gpa, "BasicArt.bmp");
+    // self.texture_image_view = try self.createTextureImageView();
+    // self.texture_sampler = try self.createTextureSampler();
+    //
+    // const vertex_buffer = try self.createBuffer(Vertex, vertices);
+    // self.vertex_buffer = vertex_buffer.buffer;
+    // self.vertex_buffer_memory = vertex_buffer.memory;
+    //
+    // const index_buffer = try self.createBuffer(u16, indices);
+    // self.index_buffer = index_buffer.buffer;
+    // self.index_buffer_memory = index_buffer.memory;
+    //
+    // self.uniform_buffers = self.createUniformBuffers();
+    // self.uniform_buffer_memories = self.createUniformBufferMemories();
+    // self.uniform_buffer_maps = self.createUniformBufferMaps();
+    //
+    // self.descriptor_pool = try self.createDescriptorPool();
+    // self.descriptor_sets = try self.createDescriptorSets();
+    //
+    // self.command_buffers = try self.createCommandBuffers(MAX_FRAMES_IN_FLIGHT);
+    //
+    // self.in_flight_fences = try self.createFences(MAX_FRAMES_IN_FLIGHT);
+    // self.image_available_semaphores = try self.createSemaphores(MAX_FRAMES_IN_FLIGHT);
+    // self.render_finished_semaphores = try self.createSemaphores(MAX_FRAMES_IN_FLIGHT);
 }
 
 fn coreLoop(
@@ -544,24 +569,6 @@ fn createSwapchainImageViews(self: *const @This()) vk.Errors!ImageViews {
     return views;
 }
 
-fn createDescriptorSetLayout(self: *const @This()) vk.Errors!vk.DescriptorSetLayout {
-    const sampler_layout_binding: vk.DescriptorSetLayoutBinding = .{
-        .binding = 1,
-        .descriptor_count = 1,
-        .descriptor_type = .combined_image_sampler,
-        .stage_flags = .fragment_bit,
-    };
-    const bindings = [_]vk.DescriptorSetLayoutBinding{sampler_layout_binding};
-    const create_info: vk.DescriptorSetLayoutCreateInfo = .{
-        .binding_count = @truncate(bindings.len),
-        .p_bindings = &bindings,
-    };
-    var set_layout: vk.DescriptorSetLayout = .null;
-    try vk.createDescriptorSetLayout(self.device, &create_info, null, &set_layout)
-        .handle(.FailedToCreateDescriptorSetLayout);
-    return set_layout;
-}
-
 fn createRenderPass(self: *const @This()) vk.Errors!vk.RenderPass {
     const color_attachments = [_]vk.AttachmentDescription{
         .{
@@ -630,6 +637,7 @@ fn createDescriptorSetLayout(self: *const @This()) vk.Errors!vk.DescriptorSetLay
     };
 
     const bindings = [_]vk.DescriptorSetLayout{ ubo_layout_binding, sampler_layout_binding };
+
     const create_info: vk.DescriptorSetLayoutCreateInfo = .{
         .binding_count = @truncate(bindings.len),
         .p_bindings = &bindings,
