@@ -1,10 +1,18 @@
 # Renderer 
-- create a basic render engine that can handle both 2d and 3d inputs
-- use compute shader to improve sending data
+- Inputs:
+     - images 
+     - pipeline configs 
+     - render passes
+     - models
+     - shaders
+- Outputs
+    - 2d render of an image/model 
+    - 3d render of an image/model
 
 # Window 
-- currently only supports windows 
-- need to add support for linux + macos 
-
-# Surface 
-- currently only supports windows
+## Windows
+- Intel 
+- ARM
+## Macos
+## Linux
+- xlib surface

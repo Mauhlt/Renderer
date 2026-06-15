@@ -1325,7 +1325,7 @@ fn createDescriptorPool() vk.Errors!vk.DescriptorPool {
 }
 
 fn createDescriptorSets(self: *const @This()) vk.Errors!DescriptorSets {
-    var sets: DescriptorSets = .{};
+    var layouts = [_]vk.DescriptorSetLayout{.null} ** MAX_FRAMES_IN_FLIGHT;
 
     const alloc_info: vk.DescriptorSetAllocateInfo = .{
         .descriptor_pool = self.descriptor_pool,
@@ -1355,9 +1355,20 @@ fn createDescriptorSets(self: *const @This()) vk.Errors!DescriptorSets {
                 .dst_binding = 0,
                 .dst_array_element = 0,
                 .descriptor_type = .uniform_buffer,
-                .
-            }
-        }
+                .descriptor_count = 1,
+                .p_buffer_info = &buffer_info,
+            },
+            .{
+                .dst_set = self.descriptor_sets[i],
+                .dst_binding = 1,
+                .dst_array_element = 0,
+                .descriptor_type = .combined_image_sampler,
+                .descriptor_count = 1,
+                .p_image_info = &image_info,
+            },
+        };
+
+        vk.updateDescriptorSets(self.device, @truncate(writes.len), &writes, 0, null);
     }
 }
 
