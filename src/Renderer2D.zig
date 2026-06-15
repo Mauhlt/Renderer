@@ -211,10 +211,13 @@ fn initVulkan(
     self.descriptor_set_layout = try self.createDescriptorSetLayout();
     errdefer vk.destroyDescriptorSetLayout(self.device, self.descriptor_set_layout, null);
 
-    // self.pipeline_layout = try self.createPipelineLayout();
-    // const shader_filenames = [_][]const u8{ "square.vert.spv", "square.frag.spv" };
-    // self.pipeline = try self.createGraphicsPipeline(gpa, io, &shader_filenames);
-    //
+    self.pipeline_layout = try self.createPipelineLayout();
+    errdefer vk.destroyPipelineLayout(self.device, self.pipeline_layout, null);
+
+    const shader_filenames = [_][]const u8{ "square.vert.spv", "square.frag.spv" };
+    self.pipeline = try self.createGraphicsPipeline(gpa, io, &shader_filenames);
+    errdefer vk.destroyPipeline(self.device, self.pipeline, null);
+
     // self.command_pool = try self.createCommandPool();
     // self.texture_image = try self.createTextureImage(io, gpa, "BasicArt.bmp");
     // self.texture_image_view = try self.createTextureImageView();
