@@ -153,8 +153,6 @@ fn initVulkan(
     vertices: []const Vertex,
     indices: []const u16,
 ) !void {
-    _ = io;
-    _ = gpa;
     _ = vertices;
     _ = indices;
 
@@ -169,9 +167,7 @@ fn initVulkan(
     self.surface = try self.createSurface();
     errdefer vk.destroySurfaceKHR(self.instance, self.surface, null);
 
-    const rdes = [_][*:0]const u8{
-        vk.ExtensionName.swapchain,
-    };
+    const rdes = [_][*:0]const u8{vk.ExtensionName.swapchain};
     self.physical_device = try self.pickPhysicalDevice(&rdes);
 
     self.device = try self.createLogicalDevice(&rdes);
@@ -192,18 +188,10 @@ fn initVulkan(
     self.swapchain_extent = ssd.chooseSwapExtent(&self.window);
 
     self.swapchain_image_views = try self.createSwapchainImageViews();
-    errdefer {
-        for (0..MAX_IMAGES) |i| {
-            vk.destroyImageView(self.device, self.swapchain_image_views[i], null);
-        }
-    }
+    errdefer for (0..MAX_IMAGES) |i| vk.destroyImageView(self.device, self.swapchain_image_views[i], null);
 
     self.swapchain_framebuffers = try self.createSwapchainFramebuffers();
-    errdefer {
-        for (0..MAX_IMAGES) |i| {
-            vk.destroyFramebuffer(self.device, self.swapchain_framebuffers[i], null);
-        }
-    }
+    errdefer for (0..MAX_IMAGES) |i| vk.destroyFramebuffer(self.device, self.swapchain_framebuffers[i], null);
 
     self.swapchain_render_pass = try self.createRenderPass();
     errdefer vk.destroyRenderPass(self.device, self.swapchain_render_pass, null);
@@ -332,6 +320,11 @@ fn createInstance(
         .engine_version = vk.makeApiVersion(0, 1, 0, 0),
         .api_version = vk.makeApiVersion(0, 1, 0, 0),
     };
+    // TODO: add VK_EXT_DEBUG_UTILS_EXTENSION_NAME - better debug + allows callbacks
+    // defaults: khr_surface, khr_win32_surface, ext_debug_utils,
+    // layers: layer_khronos_validation
+    // add debugutilsmessengercreateinfoext struct - pass in debug callback fn
+    // pnext = convert structs into linked lists
     const exts = ExtensionProperties.initInstance() catch
         return vk.Errors.FailedToEnumerateInstanceExtensions;
     // exts.printExtensions();
@@ -388,7 +381,8 @@ fn isDeviceSuitable(
     return qfi.isComplete() and
         checkDeviceExtensionSupport(physical_device, rdes) and
         ssd.isComplete() and
-        feats.sampler_anisotropy == .true;
+        feats.sampler_anisotropy == .true and
+        props.buffer_features.contains(.vertex_buffer_bit); // if supported = stride 3 allowed, otherwise default stride 4
 }
 
 fn checkDeviceExtensionSupport(
