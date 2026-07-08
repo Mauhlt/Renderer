@@ -69,7 +69,7 @@ swapchain_extent: vk.Extent2D = .{ .width = 640, .height = 480 }, // 104
 swapchain_image_views: ImageViews = .{.null} ** MAX_IMAGES, // 120
 swapchain_framebuffers: Framebuffers = .{.null} ** MAX_IMAGES, // 136
 // pipeline
-render_pass: vk.RenderPass = .null, // 144
+swapchain_render_pass: vk.RenderPass = .null, // 144
 descriptor_set_layout: vk.DescriptorSetLayout = .null, // 152
 pipeline_layout: vk.PipelineLayout = .null, // 160
 // pipeline_config: vk.GraphicsPipelineCreateInfo = .{},
@@ -110,10 +110,10 @@ pub fn run(
 ) !void {
     // TODO: Remove this and generate data based on player position
     const vertices = [_]Vertex{
-        .{ .pos = .{ -0.5, -0.5 }, .color = .{ 0, 0, 1 } },
-        .{ .pos = .{ 0.5, -0.5 }, .color = .{ 0, 0, 1 } },
-        .{ .pos = .{ 0.5, 0.5 }, .color = .{ 0, 0, 1 } },
-        .{ .pos = .{ -0.5, 0.5 }, .color = .{ 0, 0, 1 } },
+        .{ .pos = .{ -0.5, -0.5 }, .color = .{ 1, 0, 0 }, .tex_coord = .{ 1, 0 } },
+        .{ .pos = .{ 0.5, -0.5 }, .color = .{ 0, 1, 0 }, .tex_coord = .{ 0, 0 } },
+        .{ .pos = .{ 0.5, 0.5 }, .color = .{ 0, 0, 1 }, .tex_coord = .{ 0, 1 } },
+        .{ .pos = .{ -0.5, 0.5 }, .color = .{ 1, 1, 1 }, .tex_coord = .{ 1, 1 } },
     };
     const indices = [_]u16{ 0, 1, 2, 2, 3, 0 };
     var self: @This() = .{};
@@ -384,19 +384,14 @@ fn isDeviceSuitable(
     vk.getPhysicalDeviceProperties(physical_device, &props);
     var feats: vk.PhysicalDeviceFeatures = undefined;
     vk.getPhysicalDeviceFeatures(physical_device, &feats);
-    const qfi = QFI.init(physical_device, surface) catch |err| {
-        log.debug("{s}", .{@errorName(err)});
-        return false;
-    };
-    const ssd = SSD.init(physical_device, surface) catch |err| {
-        log.debug("{s}", .{@errorName(err)});
-        return false;
-    };
+
+    const qfi = QFI.init(physical_device, surface) catch return false;
+    const extensions_supported = checkDeviceExtensionSupport(physical_device, rdes);
+    const ssd = SSD.init(physical_device, surface) catch return false;
     return qfi.isComplete() and
-        checkDeviceExtensionSupport(physical_device, rdes) and
+        extensions_supported and
         ssd.isComplete() and
-        feats.sampler_anisotropy == .true and
-        props.buffer_features.contains(.vertex_buffer_bit); // if supported = stride 3 allowed, otherwise default stride 4
+        feats.sampler_anisotropy == .true;
 }
 
 fn checkDeviceExtensionSupport(
@@ -556,7 +551,7 @@ fn getNumSwapchainImages(self: *const @This()) vk.Errors!u32 {
 fn createSwapchainImages(
     self: *const @This(),
 ) vk.Errors!Images {
-    var n_images: u32 = self.n_swapchain_images;
+    var n_images: u32 = @truncate(self.n_swapchain_images);
     var images: Images = .{.null} ** MAX_IMAGES;
     try vk.getSwapchainImagesKHR(
         self.device,
@@ -631,23 +626,24 @@ fn createRenderPass(self: *const @This()) vk.Errors!vk.RenderPass {
 }
 
 fn createDescriptorSetLayout(self: *const @This()) vk.Errors!vk.DescriptorSetLayout {
-    const ubo_layout_binding: vk.DescriptorSetLayout = .{
+    const ubo_layout_binding: vk.DescriptorSetLayoutBinding = .{
         .binding = 0,
         .descriptor_count = 1,
         .descriptor_type = .uniform_buffer,
         .p_immutable_samplers = null,
-        .stage_flags = .vertex_bit,
+        .stage_flags = .init(.vertex_bit),
     };
 
-    const sampler_layout_binding: vk.DescriptorSetLayout = .{
+    const sampler_layout_binding: vk.DescriptorSetLayoutBinding = .{
         .binding = 1,
         .descriptor_count = 1,
         .descriptor_type = .combined_image_sampler,
         .p_immutable_samplers = null,
-        .stage_flags = .fragment_bit,
+        .stage_flags = .init(.fragment_bit),
     };
 
-    const bindings = [_]vk.DescriptorSetLayout{ ubo_layout_binding, sampler_layout_binding };
+    const bindings: [2]vk.DescriptorSetLayoutBinding = //
+        .{ ubo_layout_binding, sampler_layout_binding };
 
     const create_info: vk.DescriptorSetLayoutCreateInfo = .{
         .binding_count = @truncate(bindings.len),

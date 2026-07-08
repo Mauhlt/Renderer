@@ -21,17 +21,6 @@ pub fn init(
         &capabilities,
     )
         .handle(.FailedToGetPhysicalDeviceSurfaceCapabilities);
-    // switch (vk.getPhysicalDeviceSurfaceCapabilitiesKHR(
-    //     physical_device,
-    //     surface,
-    //     &capabilities,
-    // )) {
-    //     .success => {},
-    //     else => |tag| {
-    //         log.debug("{t}\n", .{tag});
-    //         return vk.Errors.FailedToGetPhysicalDeviceSurfaceCapabilities;
-    //     }
-    // }
 
     var n_formats: u32 = 0;
     try vk.getPhysicalDeviceSurfaceFormatsKHR(
@@ -41,18 +30,7 @@ pub fn init(
         null,
     )
         .handle(.FailedToGetPhysicalDeviceSurfaceFormatsKHR);
-    // switch (vk.getPhysicalDeviceSurfaceFormatsKHR(
-    //     physical_device,
-    //     surface,
-    //     &n_formats,
-    //     null,
-    // )) {
-    //     .success => {},
-    //     else => |tag| {
-    //         log.debug("{t}\n", .{tag});
-    //         return vk.Errors.FailedToGetPhysicalDeviceSurfaceFormatsKHR;
-    //     }
-    // }
+
     var formats: [LEN]vk.SurfaceFormatKHR = undefined;
     try vk.getPhysicalDeviceSurfaceFormatsKHR(
         physical_device,
@@ -61,18 +39,6 @@ pub fn init(
         &formats,
     )
         .handle(.FailedToGetPhysicalDeviceSurfaceFormatsKHR);
-    // switch (vk.getPhysicalDeviceSurfaceFormatsKHR(
-    //     physical_device,
-    //     surface,
-    //     &n_formats,
-    //     &formats,
-    // )) {
-    //     .success => {},
-    //     else => |tag| {
-    //         log.debug("{t}\n", .{tag});
-    //         return vk.Errors.FailedToGetPhysicalDeviceSurfaceFormatsKHR;
-    //     }
-    // }
 
     var n_present_modes: u32 = 0;
     try vk.getPhysicalDeviceSurfacePresentModesKHR(
@@ -81,18 +47,7 @@ pub fn init(
         &n_present_modes,
         null,
     ).handle(.FailedToGetPhysicalDeviceSurfacePresentModesKHR);
-    // switch (vk.getPhysicalDeviceSurfacePresentModesKHR(
-    //     physical_device,
-    //     surface,
-    //     &n_present_modes,
-    //     null,
-    // )) {
-    //     .success => {},
-    //     else => |tag| {
-    //         log.debug("{t}\n", .{tag});
-    //         return vk.Errors.FailedToGetPhysicalDeviceSurfacePresentModesKHR;
-    //     }
-    // }
+
     var present_modes: [LEN]vk.PresentModeKHR = undefined;
     try vk.getPhysicalDeviceSurfacePresentModesKHR(
         physical_device,
@@ -101,18 +56,6 @@ pub fn init(
         &present_modes,
     )
         .handle(.FailedToGetPhysicalDeviceSurfacePresentModesKHR);
-    // switch (vk.getPhysicalDeviceSurfacePresentModesKHR(
-    //     physical_device,
-    //     surface,
-    //     &n_present_modes,
-    //     &present_modes,
-    // )) {
-    //     .success => {},
-    //     else => |tag| {
-    //         log.debug("{t}\n", .{tag});
-    //         return vk.Errors.FailedToGetPhysicalDeviceSurfacePresentModesKHR;
-    //     }
-    // }
 
     return .{
         .capabilities = capabilities,

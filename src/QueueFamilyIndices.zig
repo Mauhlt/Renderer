@@ -1,13 +1,12 @@
 const std = @import("std");
 const vk = @import("Vulkan");
 const log = std.log.scoped(.qfi);
-pub const QFI = @This();
 
 graphics_family: ?u32 = null,
 present_family: ?u32 = null,
 
-pub fn init(physical_device: vk.PhysicalDevice, surface: vk.SurfaceKHR) vk.Errors!QFI {
-    var self: QFI = .{};
+pub fn init(physical_device: vk.PhysicalDevice, surface: vk.SurfaceKHR) vk.Errors!@This() {
+    var self: @This() = .{};
     var n_families: u32 = 0;
     vk.getPhysicalDeviceQueueFamilyProperties(physical_device, &n_families, null);
     var families: [64]vk.QueueFamilyProperties = undefined;
@@ -31,10 +30,10 @@ pub fn init(physical_device: vk.PhysicalDevice, surface: vk.SurfaceKHR) vk.Error
     return self;
 }
 
-pub fn isComplete(self: QFI) bool {
+pub fn isComplete(self: @This()) bool {
     return self.graphics_family != null and self.present_family != null;
 }
 
-pub fn isSameFamily(self: QFI) bool {
+pub fn isSameFamily(self: @This()) bool {
     return self.graphics_family.? == self.present_family.?;
 }

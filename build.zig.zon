@@ -5,12 +5,12 @@
     .minimum_zig_version = "0.16.0-dev.2676+4e2cec265",
     .dependencies = .{
         .Image = .{
-            .url = "git+https://github.com/Mauhlt/Image.git#eabdad7c6b25e774b10f3ec0e42ed4f7fe63c3b8",
-            .hash = "Image-0.0.0-0z0ITLkBhADzvnpuTdi4PHZ5IhgCmKdmnoSXQl2j4UUX",
+            .url = "git+https://github.com/Mauhlt/Image.git#2093ff2b0f1ee66d42cd9139db74bdb1f1466bb5",
+            .hash = "Image-0.0.0-0z0ITLkBhAA9NeW1brd9K4HJboV06AQFJH9F2ZA0QpIY",
         },
         .Vulkan = .{
-            .url = "git+https://github.com/Mauhlt/Vulkan.git#92361770e0b80b15bf6baee2204f036d6ede6648",
-            .hash = "Vulkan-0.0.0-9v7hof5yEQAoLB5bV4b2HlxJ3h-XlIG-AWHqhFsZRppg",
+            .url = "git+https://github.com/Mauhlt/Vulkan.git#3d1280055167abe33cd6959d26e8d1cfd2d57647",
+            .hash = "Vulkan-0.0.0-9v7hoSVzEQDPzdP81mnDUpONNDt4n_eKYU9fP0EvY944",
         },
         .Windows = .{
             .url = "git+https://github.com/Mauhlt/Windows.git#05cf23872ad4ffdebad2b1eebc3c75c876384ad9",

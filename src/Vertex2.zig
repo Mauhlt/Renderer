@@ -2,6 +2,7 @@ const vk = @import("Vulkan");
 const BindingDescriptions = [2]vk.VertexInputBindingDescription;
 const AttributeDescriptions = [3]vk.VertexInputAttributeDescription;
 // need to check for r8g8b8_unorm - many desktop gpus dont expose it:
+// another choice is r8g8b8_uint
 // check via: vk.FormatProperties props; vk.GetPhysicalDeviceProperties(self.physical_device, .r8g8b8_unorm, &props);
 
 pos: [2]f32,

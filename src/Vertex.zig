@@ -8,9 +8,11 @@ tex_coord: [2]f32,
 
 pub fn getBindingDescription() BindingDescriptions {
     return .{
-        .binding = 0,
-        .stride = @sizeOf(@This()),
-        .input_rate = .vertex,
+        .{
+            .binding = 0,
+            .stride = @sizeOf(@This()),
+            .input_rate = .vertex,
+        },
     };
 }
 
@@ -24,13 +26,13 @@ pub fn getAttributeDescription() AttributeDescriptions {
         },
         .{
             .binding = 0,
-            .location = 0,
+            .location = 1,
             .format = .r32g32b32_sfloat,
             .offset = @offsetOf(@This(), "color"),
         },
         .{
             .binding = 0,
-            .location = 0,
+            .location = 2,
             .format = .r32g32_sfloat,
             .offset = @offsetOf(@This(), "tex_coord"),
         },
