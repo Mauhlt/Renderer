@@ -12,11 +12,7 @@ pub fn main() !void {
     // io
     var threaded = std.Io.Threaded.init_single_threaded;
     const io = threaded.io();
-    // exe
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const n = try std.process.executableDirPath(io, &buf);
-    const exe_dir = buf[0..n];
-    // renderer
-    try r2d.run(io, gpa, exe_dir);
+
+    try r2d.run(io, gpa);
     // try r3d.run(io, gpa);
 }
