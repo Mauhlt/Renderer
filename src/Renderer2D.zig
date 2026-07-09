@@ -25,6 +25,9 @@ const Image = @import("Image");
 const QFI = @import("QueueFamilyIndices.zig");
 const SSD = @import("SwapchainSupportDetails.zig");
 const ExtensionProperties = @import("ExtensionProperties.zig");
+const UBO = @import("UniformBufferObject.zig");
+const Vertex = @import("Vertex.zig");
+const FPS = @import("FPS.zig");
 const MAX_IMAGES: u32 = 3;
 const Images: type = [MAX_IMAGES]vk.Image;
 const ImageViews: type = [MAX_IMAGES]vk.ImageView;
@@ -37,9 +40,6 @@ const UniformBuffers: type = [MAX_FRAMES_IN_FLIGHT]vk.Buffer;
 const UniformBufferMemories: type = [MAX_FRAMES_IN_FLIGHT]vk.DeviceMemory;
 const UniformBufferMaps: type = [MAX_FRAMES_IN_FLIGHT]?*anyopaque;
 const DescriptorSets: type = [MAX_FRAMES_IN_FLIGHT]vk.DescriptorSet;
-const Vertex = @import("Vertex.zig");
-const UBO = @import("UniformBufferObject.zig");
-const FPS = @import("FPS.zig");
 const VulkanImage = struct {
     image: vk.Image,
     memory: vk.DeviceMemory,
@@ -72,37 +72,37 @@ swapchain_framebuffers: Framebuffers = .{.null} ** MAX_IMAGES, // 136
 swapchain_render_pass: vk.RenderPass = .null, // 144
 descriptor_set_layout: vk.DescriptorSetLayout = .null, // 152
 pipeline_layout: vk.PipelineLayout = .null, // 160
-// pipeline_config: vk.GraphicsPipelineCreateInfo = .{},
-pipeline: vk.Pipeline = .null, // 168
+// pipeline_config: vk.GraphicsPipelineCreateInfo = .{}, // 304
+pipeline: vk.Pipeline = .null, // 312
 
-command_pool: vk.CommandPool = .null, // 176
+command_pool: vk.CommandPool = .null, // 320
 // textures
-texture_image: vk.Image = .null, // 184
-texture_memory: vk.DeviceMemory = .null, // 192
-texture_image_view: vk.ImageView = .null, // 200
-texture_sampler: vk.Sampler = .null, // 208
+texture_image: vk.Image = .null, // 328
+texture_memory: vk.DeviceMemory = .null, // 336
+texture_image_view: vk.ImageView = .null, // 344
+texture_sampler: vk.Sampler = .null, // 352
 // vertex
-vertex_buffer: vk.Buffer = .null, // 216
-vertex_buffer_memory: vk.DeviceMemory = .null, // 224
+vertex_buffer: vk.Buffer = .null, // 360
+vertex_buffer_memory: vk.DeviceMemory = .null, // 368
 // index
-index_buffer: vk.Buffer = .null, // 232
-index_buffer_memory: vk.DeviceMemory = .null, // 240
+index_buffer: vk.Buffer = .null, // 376
+index_buffer_memory: vk.DeviceMemory = .null, // 384
 // uniform buffers
-uniform_buffers: UniformBuffers = [_]vk.Buffer{.null} ** MAX_FRAMES_IN_FLIGHT, // 256
-uniform_buffer_memories: UniformBufferMemories = [_]vk.DeviceMemory{.null} ** MAX_FRAMES_IN_FLIGHT, // 272
-uniform_buffer_maps: UniformBufferMaps = [_]?*anyopaque{null} ** MAX_FRAMES_IN_FLIGHT, // 288
+uniform_buffers: UniformBuffers = [_]vk.Buffer{.null} ** MAX_FRAMES_IN_FLIGHT, // 408
+uniform_buffer_memories: UniformBufferMemories = [_]vk.DeviceMemory{.null} ** MAX_FRAMES_IN_FLIGHT, // 432
+uniform_buffer_maps: UniformBufferMaps = [_]?*anyopaque{null} ** MAX_FRAMES_IN_FLIGHT, // 456
 // descriptors
-descriptor_pool: vk.DescriptorPool = .null, // 296
-descriptor_sets: DescriptorSets = [_]vk.DescriptorSet{.null} ** MAX_FRAMES_IN_FLIGHT, // 312
+descriptor_pool: vk.DescriptorPool = .null, // 464
+descriptor_sets: DescriptorSets = [_]vk.DescriptorSet{.null} ** MAX_FRAMES_IN_FLIGHT, // 488
 // command
-command_buffers: CommandBuffers = .{.null} ** MAX_FRAMES_IN_FLIGHT, // 328
+command_buffers: CommandBuffers = .{.null} ** MAX_FRAMES_IN_FLIGHT, // 512
 // sync
-image_available_semaphores: Semaphores = .{.null} ** MAX_FRAMES_IN_FLIGHT, // 344
-render_finished_semaphores: Semaphores = .{.null} ** MAX_FRAMES_IN_FLIGHT, // 360
-in_flight_fences: Fences = .{.null} ** MAX_FRAMES_IN_FLIGHT, // 376
+image_available_semaphores: Semaphores = .{.null} ** MAX_FRAMES_IN_FLIGHT, // 536
+render_finished_semaphores: Semaphores = .{.null} ** MAX_FRAMES_IN_FLIGHT, // 560
+in_flight_fences: Fences = .{.null} ** MAX_FRAMES_IN_FLIGHT, // 584
 // misc
-current_frame: usize = 0, // 384
-framebuffer_resize: bool = false, // 392
+current_frame: usize = 0, // 592
+framebuffer_resize: bool = false, // 600
 
 pub fn run(
     io: std.Io,
@@ -518,9 +518,7 @@ fn destroySwapchain(self: *@This()) void {
     vk.destroySwapchainKHR(self.device, self.swapchain, null);
 }
 
-fn recreateSwapchain(
-    self: *@This(),
-) vk.Errors!void {
+fn recreateSwapchain(self: *@This()) vk.Errors!void {
     vk.deviceWaitIdle(self.device);
 
     self.swapchain = try self.createSwapchain();
@@ -923,20 +921,7 @@ inline fn mapVulkanMemory(
     @memcpy(gpu_data[0..data.len], data);
 }
 
-// TODO: Impl this
-const Texture = struct {
-    image: vk.Image,
-    memory: vk.DeviceMemory,
-    view: vk.ImageView,
-    sampler: vk.Sampler,
-
-    pub fn deinit(self: *@This(), device: vk.Device) void {
-        vk.destroyImage(device, self.image, null);
-        vk.freeMemory(device, self.memory, null);
-        vk.destroyImageView(device, self.image_view, null);
-    }
-};
-
+/// TODO: Fix me - currently stuck to index buffer bit - should not be this way
 fn createBuffer(self: *const @This(), T: type, data: []const T) vk.Errors!VulkanBuffer {
     const size: vk.DeviceSize = @sizeOf(T) * data.len;
     const staging_buffer = try self.createVulkanBuffer(size, .init(.transfer_src_bit));
@@ -1298,14 +1283,13 @@ fn createTextureSampler(self: *const @This()) !vk.Sampler {
     return sampler;
 }
 
-fn createUniformBuffers(self: *@This()) !void {
-    const size = @sizeOf(UBO);
+fn createUniformBuffers(self: *const @This()) !VulkanBuffer {
+    const size: vk.DeviceSize = @sizeOf(UBO);
     const len = self.uniform_buffers.len;
     for (0..len) |i| {
-        const vulkan_buffer = self.createBuffer(UBO);
-        // fn createBuffer(self: *const @This(), T: type, data: []const T) vk.Errors!VulkanBuffer {
-        self.uniform_buffers[i] = vulkan_buffer.buffer;
-        self.uniform_buffers[i] = vulkan_buffer.memory;
+        const buffer = try self.createVulkanBuffer(size, .init(.uniform_buffer_bit));
+        const memory = try self.createVulkanBufferMemory(buffer, .initMany(&.{ .host_visible_bit, .host_coherent_bit }));
+        vk.mapMemory(self.device, buffer, 0, size, 0, map);
     }
 }
 
