@@ -1273,13 +1273,26 @@ fn createTextureSampler(self: *const @This()) !vk.Sampler {
     return sampler;
 }
 
-fn createUniformBuffers(self: *const @This()) !VulkanBuffer {
+fn createUniformBuffers(self: *@This()) !void {
     const size: vk.DeviceSize = @sizeOf(UBO);
     const len = self.uniform_buffers.len;
     for (0..len) |i| {
-        const buffer = try self.createVulkanBuffer(size, .init(.uniform_buffer_bit));
-        const memory = try self.createVulkanBufferMemory(buffer, .initMany(&.{ .host_visible_bit, .host_coherent_bit }));
-        vk.mapMemory(self.device, buffer, 0, size, 0, map);
+        self.uniform_buffers[i] = try self.createVulkanBuffer(
+            size,
+            .init(.uniform_buffer_bit),
+        );
+        self.uniform_buffer_memories[i] = try self.createVulkanBufferMemory(
+            self.uniform_buffers[i],
+            .initMany(&.{ .host_visible_bit, .host_coherent_bit }),
+        );
+        vk.mapMemory(
+            self.device,
+            self.uniform_buffers[i],
+            0,
+            size,
+            0,
+            self.uniform_buffer_maps[i],
+        );
     }
 }
 
