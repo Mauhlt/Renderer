@@ -227,11 +227,19 @@ fn initVulkan(
     self.texture_image_view = try self.createTextureImageView();
     self.texture_sampler = try self.createTextureSampler();
 
-    const vertex_buffer = try self.createBuffer(Vertex, vertices);
+    const vertex_buffer = try self.createBuffer(
+        Vertex,
+        vertices,
+        .initMany(&.{ .transfer_dst_bit, .vertex_buffer_bit }),
+    );
     self.vertex_buffer = vertex_buffer.buffer;
     self.vertex_buffer_memory = vertex_buffer.memory;
 
-    const index_buffer = try self.createBuffer(u16, indices);
+    const index_buffer = try self.createBuffer(
+        u16,
+        indices,
+        .initMany(&.{ .transfer_dst_bit, .index_buffer_bit }),
+    );
     self.index_buffer = index_buffer.buffer;
     self.index_buffer_memory = index_buffer.memory;
 
@@ -921,24 +929,26 @@ inline fn mapVulkanMemory(
     @memcpy(gpu_data[0..data.len], data);
 }
 
-/// TODO: Fix me - currently stuck to index buffer bit - should not be this way
-fn createBuffer(self: *const @This(), T: type, data: []const T) vk.Errors!VulkanBuffer {
+fn createBuffer(
+    self: *const @This(),
+    T: type,
+    data: []const T,
+    props: vk.MemoryPropertyFlags,
+) vk.Errors!VulkanBuffer {
     const size: vk.DeviceSize = @sizeOf(T) * data.len;
+    // buffer
     const staging_buffer = try self.createVulkanBuffer(size, .init(.transfer_src_bit));
     defer vk.destroyBuffer(self.device, staging_buffer, null);
-
+    // memory
     const staging_buffer_memory = try self.createVulkanBufferMemory(
         staging_buffer,
         .initMany(&.{ .host_visible_bit, .host_coherent_bit }),
     );
     defer vk.freeMemory(self.device, staging_buffer_memory, null);
-
+    // map memory
     try self.mapVulkanMemory(T, data, size, staging_buffer_memory);
-
-    const buffer = try self.createVulkanBuffer(
-        size,
-        .initMany(&.{ .transfer_dst_bit, .index_buffer_bit }),
-    );
+    // copy commands
+    const buffer = try self.createVulkanBuffer(size, props);
     const buffer_memory = try self.createVulkanBufferMemory(
         buffer,
         .init(.device_local_bit),
@@ -957,39 +967,12 @@ fn copyVulkanBuffer(
     dst: vk.Buffer,
     size: vk.DeviceSize,
 ) vk.Errors!void {
-    const alloc_info = vk.CommandBufferAllocateInfo{
-        .level = .primary,
-        .command_pool = self.command_pool,
-        .command_buffer_count = 1,
-    };
-    var command_buffer: vk.CommandBuffer = .null;
-    try vk.allocateCommandBuffers(self.device, &alloc_info, &command_buffer)
-        .handle(.FailedToAllocateCommandBuffer);
-
-    const begin_info = vk.CommandBufferBeginInfo{
-        .flags = .init(.one_time_submit_bit),
-    };
-    try vk.beginCommandBuffer(command_buffer, &begin_info)
-        .handle(.FailedToBeginCommandBuffer);
-
-    const copy_region = vk.BufferCopy{
+    const command_buffer = try self.beginSingleTimeCommands();
+    const copy_region: vk.BufferCopy = .{
         .size = size,
     };
     vk.cmdCopyBuffer(command_buffer, src, dst, 1, &copy_region);
-
-    try vk.endCommandBuffer(command_buffer)
-        .handle(.FailedToEndCommandBuffer);
-
-    const submit_info = vk.SubmitInfo{
-        .command_buffer_count = 1,
-        .p_command_buffers = &command_buffer,
-    };
-    try vk.queueSubmit(self.graphics_queue, 1, &submit_info, .null)
-        .handle(.FailedToSubmitQueue);
-    try vk.queueWaitIdle(self.graphics_queue)
-        .handle(.FailedToIdleQueue);
-
-    vk.freeCommandBuffers(self.device, self.command_pool, 1, &command_buffer);
+    try self.endSingleTimeCommands(command_buffer);
 }
 
 fn beginSingleTimeCommands(self: *const @This()) vk.Errors!vk.CommandBuffer {
@@ -1002,6 +985,13 @@ fn beginSingleTimeCommands(self: *const @This()) vk.Errors!vk.CommandBuffer {
     var command_buffer: vk.CommandBuffer = .null;
     try vk.allocateCommandBuffers(self.device, &alloc_info, &command_buffer)
         .handle(.FailedToAllocateCommandBuffers);
+
+    const begin_info: vk.CommandBufferBeginInfo = .{
+        .flags = .one_time_submit_bit,
+    };
+    try vk.beginCommandBuffer(command_buffer, &begin_info)
+        .handle(.FailedToBeginCommandBuffer);
+
     return command_buffer;
 }
 
