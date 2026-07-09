@@ -42,7 +42,7 @@ const UBO = @import("UniformBufferObject.zig");
 const FPS = @import("FPS.zig");
 const VulkanImage = struct {
     image: vk.Image,
-    buffer: vk.Buffer,
+    memory: vk.DeviceMemory,
 };
 const VulkanBuffer = struct {
     buffer: vk.Buffer,
@@ -221,7 +221,9 @@ fn initVulkan(
     self.command_pool = try self.createCommandPool();
     errdefer vk.destroyCommandPool(self.device, self.command_pool, null);
 
-    self.texture_image = try self.createTextureImage(io, gpa, "BasicArt.bmp");
+    const texture = try self.createTextureImage(io, gpa, "BasicArt.bmp");
+    self.texture_image = texture.image;
+    self.texture_memory = texture.memory;
     self.texture_image_view = try self.createTextureImageView();
     self.texture_sampler = try self.createTextureSampler();
 
@@ -233,9 +235,7 @@ fn initVulkan(
     self.index_buffer = index_buffer.buffer;
     self.index_buffer_memory = index_buffer.memory;
 
-    self.uniform_buffers = self.createUniformBuffers();
-    self.uniform_buffer_memories = self.createUniformBufferMemories();
-    self.uniform_buffer_maps = self.createUniformBufferMaps();
+    try self.createUniformBuffers();
 
     self.descriptor_pool = try self.createDescriptorPool();
     self.descriptor_sets = try self.createDescriptorSets();
@@ -873,7 +873,7 @@ fn createCommandPool(self: *const @This()) vk.Errors!vk.CommandPool {
     return pool;
 }
 
-fn createVulkanBuffer(
+inline fn createVulkanBuffer(
     self: *const @This(),
     size: vk.DeviceSize,
     usage: vk.BufferUsageFlags,
@@ -889,7 +889,7 @@ fn createVulkanBuffer(
     return buffer;
 }
 
-fn createVulkanBufferMemory(
+inline fn createVulkanBufferMemory(
     self: *const @This(),
     buffer: vk.Buffer,
     props: vk.MemoryPropertyFlags,
@@ -908,7 +908,7 @@ fn createVulkanBufferMemory(
     return memory;
 }
 
-fn mapVulkanMemory(
+inline fn mapVulkanMemory(
     self: *const @This(),
     comptime T: type,
     data: []const T,
@@ -923,6 +923,7 @@ fn mapVulkanMemory(
     @memcpy(gpu_data[0..data.len], data);
 }
 
+// TODO: Impl this
 const Texture = struct {
     image: vk.Image,
     memory: vk.DeviceMemory,
@@ -936,11 +937,7 @@ const Texture = struct {
     }
 };
 
-fn createBuffer(
-    self: *const @This(),
-    comptime T: type,
-    data: []const T,
-) vk.Errors!VulkanBuffer {
+fn createBuffer(self: *const @This(), T: type, data: []const T) vk.Errors!VulkanBuffer {
     const size: vk.DeviceSize = @sizeOf(T) * data.len;
     const staging_buffer = try self.createVulkanBuffer(size, .init(.transfer_src_bit));
     defer vk.destroyBuffer(self.device, staging_buffer, null);
@@ -1044,14 +1041,13 @@ fn createTextureImage(
     self: *const @This(),
     io: std.Io,
     gpa: std.mem.Allocator,
-    filename: []const u8,
+    filepath: []const u8,
 ) !VulkanImage {
-    // TODO: fix image so that read can be written as:  var img: Image = try .read();
-    var img = try Image.read(.{
+    var img: Image = try .read(.{
         .io = io,
         .gpa = gpa,
         .dir = self.texture,
-        .path = filename,
+        .filepath = filepath,
         .path_type = .dir,
     });
     defer img.deinit(gpa);
@@ -1070,7 +1066,8 @@ fn createTextureImage(
     switch (img.pixels) {
         inline else => |data| {
             if (image_size != data.len) return error.MismatchDimensions;
-            try self.mapVulkanMemory(@TypeOf(data[0]), data, image_size, staging_buffer_memory);
+            const slice = try data.slice(gpa, .{ .start = 0, .end = data.len });
+            try self.mapVulkanMemory(@TypeOf(slice[0]), slice, image_size, staging_buffer_memory);
         },
     }
 
@@ -1274,7 +1271,7 @@ fn createImageView(
 }
 
 fn createTextureImageView(self: *const @This()) vk.Errors!vk.ImageView {
-    return self.createImageView(self.texture_image.image, .r8g8b8a8_srgb);
+    return self.createImageView(self.texture_image, .r8g8b8a8_srgb);
 }
 
 fn createTextureSampler(self: *const @This()) !vk.Sampler {
@@ -1294,9 +1291,6 @@ fn createTextureSampler(self: *const @This()) !vk.Sampler {
         .compare_enable = .false,
         .compare_op = .always,
         .mipmap_mode = .linear,
-        .miplod_bias = 0,
-        .min_lod = 0,
-        .max_lod = 0,
     };
     var sampler: vk.Sampler = .null;
     try vk.createSampler(self.device, &create_info, null, &sampler)
@@ -1304,13 +1298,15 @@ fn createTextureSampler(self: *const @This()) !vk.Sampler {
     return sampler;
 }
 
-fn createUniformBuffers(self: *const @This()) !void {
-    const size: vk.DeviceSize = @sizeOf(UBO);
-    var uniform_buffers = [_]vk.Buffer{.null} ** MAX_FRAMES_IN_FLIGHT;
-    for (0..MAX_FRAMES_IN_FLIGHT) |i| {
-        uniform_buffers[i] = try self.createBuffer(size, .uniform_buffer_bit, .initMany(&.{ .host_visible_bit, .host_coherent_bit }));
+fn createUniformBuffers(self: *@This()) !void {
+    const size = @sizeOf(UBO);
+    const len = self.uniform_buffers.len;
+    for (0..len) |i| {
+        const vulkan_buffer = self.createBuffer(UBO);
+        // fn createBuffer(self: *const @This(), T: type, data: []const T) vk.Errors!VulkanBuffer {
+        self.uniform_buffers[i] = vulkan_buffer.buffer;
+        self.uniform_buffers[i] = vulkan_buffer.memory;
     }
-    return uniform_buffers;
 }
 
 fn createDescriptorPool(self: *const @This()) vk.Errors!vk.DescriptorPool {
