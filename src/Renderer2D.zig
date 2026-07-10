@@ -74,7 +74,6 @@ descriptor_set_layout: vk.DescriptorSetLayout = .null, // 152
 pipeline_layout: vk.PipelineLayout = .null, // 160
 // pipeline_config: vk.GraphicsPipelineCreateInfo = .{}, // 304
 pipeline: vk.Pipeline = .null, // 312
-
 command_pool: vk.CommandPool = .null, // 320
 // textures
 texture_image: vk.Image = .null, // 328
@@ -248,11 +247,11 @@ fn initVulkan(
     self.descriptor_pool = try self.createDescriptorPool();
     self.descriptor_sets = try self.createDescriptorSets();
 
-    self.command_buffers = try self.createCommandBuffers(MAX_FRAMES_IN_FLIGHT);
+    self.command_buffers = try self.createCommandBuffers();
 
-    self.in_flight_fences = try self.createFences(MAX_FRAMES_IN_FLIGHT);
-    self.image_available_semaphores = try self.createSemaphores(MAX_FRAMES_IN_FLIGHT);
-    self.render_finished_semaphores = try self.createSemaphores(MAX_FRAMES_IN_FLIGHT);
+    self.in_flight_fences = try self.createFences();
+    self.image_available_semaphores = try self.createSemaphores();
+    self.render_finished_semaphores = try self.createSemaphores();
 }
 
 fn coreLoop(
@@ -298,6 +297,7 @@ fn deinitVulkan(self: *@This()) void {
     for (0..MAX_FRAMES_IN_FLIGHT) |i| {
         vk.destroyBuffer(self.device, self.uniform_buffers[i], null);
         vk.freeMemory(self.device, self.uniform_buffers_memories[i], null);
+        vk.unmapMemory(self.device, self.uniform_buffer_maps[i], null);
     }
 
     vk.destroyDescriptorPool(self.device, self.descriptor_pool, null);
@@ -1027,8 +1027,12 @@ fn createTextureImage(
     });
     defer img.deinit(gpa);
 
-    // TODO: should be changed to match img dimensions
-    const image_size: vk.DeviceSize = img.width * img.height * 3;
+    const image_size: vk.DeviceSize = img.width * img.height * switch (img.pixels) {
+        .gray => 1,
+        .rgb => 3,
+        .rgba => 4,
+    };
+
     const staging_buffer = try self.createVulkanBuffer(image_size, .init(.transfer_src_bit));
     defer vk.destroyBuffer(self.device, staging_buffer, null);
 
@@ -1039,9 +1043,9 @@ fn createTextureImage(
     defer vk.freeMemory(self.device, staging_buffer_memory, null);
 
     switch (img.pixels) {
-        inline else => |data| {
-            if (image_size != data.len) return error.MismatchDimensions;
-            const slice = try data.slice(gpa, .{ .start = 0, .end = data.len });
+        inline else => |pixels| {
+            const slice = try pixels.slice(gpa, .{ .start = 0, .end = pixels.len });
+            defer gpa.free(slice);
             try self.mapVulkanMemory(@TypeOf(slice[0]), slice, image_size, staging_buffer_memory);
         },
     }
@@ -1297,15 +1301,17 @@ fn createUniformBuffers(self: *@This()) !void {
 }
 
 fn createDescriptorPool(self: *const @This()) vk.Errors!vk.DescriptorPool {
+    const uniform_descriptor_pool_size: vk.DescriptorPoolSize = .{
+        .type = .uniform_buffer,
+        .descriptor_count = @truncate(self.uniform_buffers.len),
+    };
+    const texture_descriptor_pool_size: vk.DescriptorPoolSize = .{
+        .type = .combined_image_sampler,
+        .descriptor_count = @truncate(self.descriptor_sets.len),
+    };
     const pool_sizes = [_]vk.DescriptorPoolSize{
-        .{
-            .type = .uniform_buffer,
-            .descriptor_count = @truncate(self.uniform_buffers.len),
-        },
-        .{
-            .type = .combined_image_sampler,
-            .descriptor_count = @truncate(self.descriptor_sets.len),
-        },
+        uniform_descriptor_pool_size,
+        texture_descriptor_pool_size,
     };
     const create_info: vk.DescriptorPoolCreateInfo = .{
         .pool_size_count = @truncate(pool_sizes.len),
@@ -1320,17 +1326,15 @@ fn createDescriptorPool(self: *const @This()) vk.Errors!vk.DescriptorPool {
 
 fn createDescriptorSets(self: *const @This()) vk.Errors!DescriptorSets {
     var layouts = [_]vk.DescriptorSetLayout{.null} ** MAX_FRAMES_IN_FLIGHT;
-
     const alloc_info: vk.DescriptorSetAllocateInfo = .{
         .descriptor_pool = self.descriptor_pool,
         .descriptor_set_count = @truncate(layouts.len),
         .p_set_layouts = &layouts,
     };
-
     try vk.allocateDescriptorSets(self.device, &alloc_info, &layouts)
         .handle(.FailedToAllocateDescriptorSets);
 
-    for (0..layouts.len) |i| {
+    for (0..MAX_FRAMES_IN_FLIGHT) |i| {
         const buffer_info: vk.DescriptorBufferInfo = .{
             .buffer = self.uniform_buffers[i],
             .offset = 0,
@@ -1368,13 +1372,11 @@ fn createDescriptorSets(self: *const @This()) vk.Errors!DescriptorSets {
 
 fn createCommandBuffers(
     self: *const @This(),
-    len: usize,
 ) vk.Errors!CommandBuffers {
-    std.debug.assert(len <= MAX_FRAMES_IN_FLIGHT);
     const alloc_info = vk.CommandBufferAllocateInfo{
         .command_pool = self.command_pool,
         .level = .primary,
-        .command_buffer_count = @truncate(len),
+        .command_buffer_count = MAX_FRAMES_IN_FLIGHT,
     };
     var command_buffers: CommandBuffers = .{.null} ** MAX_FRAMES_IN_FLIGHT;
     try vk.allocateCommandBuffers(self.device, &alloc_info, &command_buffers)
@@ -1386,8 +1388,7 @@ fn recordCommandBuffer(
     self: *@This(),
     command_buffer: vk.CommandBuffer,
     image_index: u32,
-    vertices: []const Vertex,
-    indices: []const u16,
+    n_indices: u32,
 ) vk.Errors!void {
     const cb_begin_info: vk.CommandBufferBeginInfo = .{};
     try vk.beginCommandBuffer(command_buffer, &cb_begin_info)
@@ -1428,13 +1429,22 @@ fn recordCommandBuffer(
     };
     vk.cmdSetScissor(command_buffer, 0, 1, &scissor);
 
-    _ = vertices;
     const vertex_buffers = [_]vk.Buffer{self.vertex_buffer};
     const offsets = [_]vk.DeviceSize{0};
     vk.cmdBindVertexBuffers(command_buffer, 0, 1, &vertex_buffers, &offsets);
     vk.cmdBindIndexBuffer(command_buffer, self.index_buffer, 0, .uint16);
-    vk.cmdDrawIndexed(command_buffer, @truncate(indices.len), 1, 0, 0, 0);
+    vk.cmdBindDescriptorSets(
+        command_buffer,
+        .graphics,
+        self.pipeline_layout,
+        0,
+        1,
+        &self.descriptor_sets[self.current_frame],
+        0,
+        null,
+    );
 
+    vk.cmdDrawIndexed(command_buffer, @truncate(indices.len), 1, 0, 0, 0);
     // vk.cmdDraw(command_buffer, @truncate(vertices.len), 1, 0, 0);
 
     vk.cmdEndRenderPass(command_buffer);
@@ -1443,41 +1453,29 @@ fn recordCommandBuffer(
         .handle(.FailedToRecordCommandBuffer);
 }
 
-fn createFences(
-    self: *const @This(),
-    len: usize,
-) vk.Errors!Fences {
-    std.debug.assert(len <= MAX_FRAMES_IN_FLIGHT);
+fn createFences(self: *const @This()) vk.Errors!Fences {
     const create_info: vk.FenceCreateInfo = .{
         .flags = .init(.signaled_bit),
     };
     var fences: Fences = .{.null} ** MAX_FRAMES_IN_FLIGHT;
-    for (0..len) |i| {
+    for (0..MAX_FRAMES_IN_FLIGHT) |i| {
         try vk.createFence(self.device, &create_info, null, &fences[i])
             .handle(.FailedToCreateFence);
     }
     return fences;
 }
 
-fn createSemaphores(
-    self: *const @This(),
-    len: usize,
-) vk.Errors!Semaphores {
-    std.debug.assert(len <= MAX_FRAMES_IN_FLIGHT);
+fn createSemaphores(self: *const @This()) vk.Errors!Semaphores {
     const create_info: vk.SemaphoreCreateInfo = .{};
     var semaphores: Semaphores = .{.null} ** MAX_FRAMES_IN_FLIGHT;
-    for (0..len) |i| {
+    for (0..MAX_FRAMES_IN_FLIGHT) |i| {
         try vk.createSemaphore(self.device, &create_info, null, &semaphores[i])
             .handle(.FailedToCreateSemaphore);
     }
     return semaphores;
 }
 
-fn drawFrame(
-    self: *@This(),
-    vertices: []const Vertex,
-    indices: []const u16,
-) vk.Errors!void {
+fn drawFrame(self: *@This(), indices: []const u16) vk.Errors!void {
     try vk.waitForFences(
         self.device,
         1,
@@ -1486,28 +1484,29 @@ fn drawFrame(
         std.math.maxInt(u64),
     )
         .handle(.FailedToWaitForFence);
-    try vk.resetFences(self.device, 1, &self.in_flight_fences[self.current_frame])
-        .handle(.FailedToResetFences);
 
     var image_index: u32 = undefined;
-    try vk.acquireNextImageKHR(
+    switch (vk.acquireNextImageKHR(
         self.device,
         self.swapchain,
         std.math.maxInt(u64),
         self.image_available_semaphores[self.current_frame],
         .null,
         &image_index,
-    )
-        .handle(.FailedToAcquireNextImage);
+    )) {
+        .error_out_of_date_khr => {
+            try self.recreateSwapchain();
+        },
+        else => return error.FailedToAcquireNextImage,
+    }
+    // .handle(.FailedToAcquireNextImage);
+
+    try vk.resetFences(self.device, 1, &self.in_flight_fences[self.current_frame])
+        .handle(.FailedToResetFences);
 
     try vk.resetCommandBuffer(self.command_buffers[self.current_frame], .empty)
         .handle(.FailedToResetCommandBuffer);
-    try self.recordCommandBuffer(
-        self.command_buffers[self.current_frame],
-        image_index,
-        vertices,
-        indices,
-    );
+    try self.recordCommandBuffer(self.command_buffers[self.current_frame], image_index, indices.len);
 
     const wait_semaphores = [1]vk.Semaphore{
         self.image_available_semaphores[self.current_frame],
