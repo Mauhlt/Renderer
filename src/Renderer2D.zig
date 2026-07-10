@@ -1282,28 +1282,53 @@ fn createTextureSampler(self: *const @This()) !vk.Sampler {
     return sampler;
 }
 
-fn createUniformBuffers(self: *@This()) !void {
-    const size: vk.DeviceSize = @sizeOf(UBO);
-    const len = self.uniform_buffers.len;
-    for (0..len) |i| {
-        self.uniform_buffers[i] = try self.createVulkanBuffer(
-            size,
-            .init(.uniform_buffer_bit),
-        );
-        self.uniform_buffer_memories[i] = try self.createVulkanBufferMemory(
+fn createUniformBuffers(self: *const @This()) !UniformBuffers {
+    var ubos: UniformBuffers = [_]vk.Buffer{.null} ** MAX_FRAMES_IN_FLIGHT;
+    for (0..MAX_FRAMES_IN_FLIGHT) |i| {
+        ubos[i] = try self.createVulkanBuffer(size, .init(.uniform_buffer_bit));
+    }
+    return ubos;
+}
+
+fn createUniformBufferMemories(self: *const @This()) !UniformBufferMemories {
+    var mems: UniformBufferMemories = [_]vk.DeviceMemory{.null} ** MAX_FRAMES_IN_FLIGHT;
+    for (0..MAX_FRAMES_IN_FLIGHT) |i| {
+        mems[i] = try self.createVulkanBufferMemory(
             self.uniform_buffers[i],
             .initMany(&.{ .host_visible_bit, .host_coherent_bit }),
         );
-        vk.mapMemory(
-            self.device,
-            self.uniform_buffers[i],
-            0,
-            size,
-            0,
-            self.uniform_buffer_maps[i],
-        );
+    }
+    return mems;
+}
+
+fn mapUniformBuffers(self: *const @This(), size: vk.DeviceSize) !void {
+    for (0..MAX_FRAMES_IN_FLIGHT) |i| {
+        vk.mapMemory(self.device, self.uniform_buffers[i], 0, size, 0, self.uniform_buffer_maps[i]);
     }
 }
+
+// fn createUniformBuffers(self: *@This()) !void {
+//     const size: vk.DeviceSize = @sizeOf(UBO);
+//     const len = self.uniform_buffers.len;
+//     for (0..len) |i| {
+//         self.uniform_buffers[i] = try self.createVulkanBuffer(
+//             size,
+//             .init(.uniform_buffer_bit),
+//         );
+//         self.uniform_buffer_memories[i] = try self.createVulkanBufferMemory(
+//             self.uniform_buffers[i],
+//             .initMany(&.{ .host_visible_bit, .host_coherent_bit }),
+//         );
+//         vk.mapMemory(
+//             self.device,
+//             self.uniform_buffers[i],
+//             0,
+//             size,
+//             0,
+//             self.uniform_buffer_maps[i],
+//         );
+//     }
+// }
 
 fn createDescriptorPool(self: *const @This()) vk.Errors!vk.DescriptorPool {
     const uniform_descriptor_pool_size: vk.DescriptorPoolSize = .{
