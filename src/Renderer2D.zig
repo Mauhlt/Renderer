@@ -28,6 +28,8 @@ const ExtensionProperties = @import("ExtensionProperties.zig");
 const UBO = @import("UniformBufferObject.zig");
 const Vertex = @import("Vertex.zig");
 const FPS = @import("FPS.zig");
+const VulkanImage = @import("VulkanImage.zig");
+const VulkanBuffer = @import("VulkanBuffer.zig");
 const MAX_IMAGES: u32 = 3;
 const Images: type = [MAX_IMAGES]vk.Image;
 const ImageViews: type = [MAX_IMAGES]vk.ImageView;
@@ -40,14 +42,6 @@ const UniformBuffers: type = [MAX_FRAMES_IN_FLIGHT]vk.Buffer;
 const UniformBufferMemories: type = [MAX_FRAMES_IN_FLIGHT]vk.DeviceMemory;
 const UniformBufferMaps: type = [MAX_FRAMES_IN_FLIGHT]?*anyopaque;
 const DescriptorSets: type = [MAX_FRAMES_IN_FLIGHT]vk.DescriptorSet;
-const VulkanImage = struct {
-    image: vk.Image,
-    memory: vk.DeviceMemory,
-};
-const VulkanBuffer = struct {
-    buffer: vk.Buffer,
-    memory: vk.DeviceMemory,
-};
 
 // Total: 4kB - Used 328 bytes
 shader: Dir = undefined,
@@ -223,8 +217,11 @@ fn initVulkan(
     const texture = try self.createTextureImage(io, gpa, "BasicArt.bmp");
     self.texture_image = texture.image;
     self.texture_memory = texture.memory;
+    errdefer vk.destroyImage(self.device, self.texture_image, null);
     self.texture_image_view = try self.createTextureImageView();
+    errdefer vk.destroyImageView(self.device, self.texture_image_view, null);
     self.texture_sampler = try self.createTextureSampler();
+    errdefer vk.destroySampler(self.device, self.texture_sampler, null);
 
     const vertex_buffer = try self.createBuffer(
         Vertex,
@@ -233,6 +230,8 @@ fn initVulkan(
     );
     self.vertex_buffer = vertex_buffer.buffer;
     self.vertex_buffer_memory = vertex_buffer.memory;
+    errdefer vk.destroyBuffer(self.device, self.vertex_buffer, null);
+    errdefer vk.freeMemory(self.device, self.vertex_buffer_memory, null);
 
     const index_buffer = try self.createBuffer(
         u16,
@@ -241,17 +240,23 @@ fn initVulkan(
     );
     self.index_buffer = index_buffer.buffer;
     self.index_buffer_memory = index_buffer.memory;
+    errdefer vk.destroyBuffer(self.device, self.index_buffer, null);
+    errdefer vk.freeMemory(self.device, self.index_buffer_memory, null);
 
     try self.createUniformBuffers();
 
     self.descriptor_pool = try self.createDescriptorPool();
     self.descriptor_sets = try self.createDescriptorSets();
+    errdefer vk.destroyDescriptorPool(self.device, self.descriptor_pool, null);
 
     self.command_buffers = try self.createCommandBuffers();
 
     self.in_flight_fences = try self.createFences();
+    errdefer for (0..MAX_FRAMES_IN_FLIGHT) |i| vk.destroyFence(self.device, self.in_flight_fences[i], null);
     self.image_available_semaphores = try self.createSemaphores();
+    errdefer for (0..MAX_FRAMES_IN_FLIGHT) |i| vk.destroySemaphore(self.device, self.image_available_semaphores[i], null);
     self.render_finished_semaphores = try self.createSemaphores();
+    errdefer for (0..MAX_FRAMES_IN_FLIGHT) |i| vk.destroySemaphore(self.device, self.render_finished_semaphores[i], null);
 }
 
 fn coreLoop(
