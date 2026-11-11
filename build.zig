@@ -44,7 +44,7 @@ pub fn build(b: *std.Build) !void {
     exe.root_module.addImport(image_mod.name, image_mod.mod);
     // Compile Shaders
     const shader_dir_path = "src\\Shaders";
-    var shader_dir = b.build_root.handle.openDir(
+    var shader_dir = b.root.root_dir.handle.openDir(
         b.graph.io,
         shader_dir_path,
         .{ .iterate = true },
@@ -84,9 +84,7 @@ pub fn build(b: *std.Build) !void {
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
     // Process Args
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs(); // zig build run -- arg1 arg2
     // Build Tests
     const exe_tests = b.addTest(.{
         .root_module = exe.root_module,
