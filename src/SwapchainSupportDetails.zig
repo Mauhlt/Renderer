@@ -1,6 +1,7 @@
 const std = @import("std");
 const log = std.log.scoped(.ssd);
 const vk = @import("Vulkan");
+const Errors = @import("errors.zig").Errors;
 const Window = @import("os/Windows.zig");
 
 const LEN: comptime_int = 8;
@@ -13,49 +14,45 @@ present_modes: [LEN]vk.PresentModeKHR = undefined,
 pub fn init(
     physical_device: vk.PhysicalDevice,
     surface: vk.SurfaceKHR,
-) vk.Errors!@This() {
+) Errors!@This() {
     var capabilities: vk.SurfaceCapabilitiesKHR = undefined;
-    try vk.getPhysicalDeviceSurfaceCapabilitiesKHR(
+    vk.getPhysicalDeviceSurfaceCapabilitiesKHR(
         physical_device,
         surface,
         &capabilities,
-    )
-        .handle(.FailedToGetPhysicalDeviceSurfaceCapabilities);
+    ) catch return error.FailedToGetPhysicalDeviceSurfaceCapabilities;
 
     var n_formats: u32 = 0;
-    try vk.getPhysicalDeviceSurfaceFormatsKHR(
+    _ = vk.getPhysicalDeviceSurfaceFormatsKHR(
         physical_device,
         surface,
         &n_formats,
         null,
-    )
-        .handle(.FailedToGetPhysicalDeviceSurfaceFormatsKHR);
+    ) catch return error.FailedToGetPhysicalDeviceSurfaceFormatsKHR;
 
     var formats: [LEN]vk.SurfaceFormatKHR = undefined;
-    try vk.getPhysicalDeviceSurfaceFormatsKHR(
+    _ = vk.getPhysicalDeviceSurfaceFormatsKHR(
         physical_device,
         surface,
         &n_formats,
         &formats,
-    )
-        .handle(.FailedToGetPhysicalDeviceSurfaceFormatsKHR);
+    ) catch return error.FailedToGetPhysicalDeviceSurfaceFormatsKHR;
 
     var n_present_modes: u32 = 0;
-    try vk.getPhysicalDeviceSurfacePresentModesKHR(
+    _ = vk.getPhysicalDeviceSurfacePresentModesKHR(
         physical_device,
         surface,
         &n_present_modes,
         null,
-    ).handle(.FailedToGetPhysicalDeviceSurfacePresentModesKHR);
+    ) catch return error.FailedToGetPhysicalDeviceSurfacePresentModesKHR;
 
     var present_modes: [LEN]vk.PresentModeKHR = undefined;
-    try vk.getPhysicalDeviceSurfacePresentModesKHR(
+    _ = vk.getPhysicalDeviceSurfacePresentModesKHR(
         physical_device,
         surface,
         &n_present_modes,
         &present_modes,
-    )
-        .handle(.FailedToGetPhysicalDeviceSurfacePresentModesKHR);
+    ) catch return error.FailedToGetPhysicalDeviceSurfacePresentModesKHR;
 
     return .{
         .capabilities = capabilities,

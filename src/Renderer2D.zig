@@ -19,6 +19,7 @@ const log = std.log.scoped(.r2d);
 const Dir = std.Io.Dir;
 // libraries
 const vk = @import("Vulkan");
+const Errors = @import("errors.zig").Errors;
 const Window = @import("os/Windows.zig");
 const Image = @import("Image");
 // imports
@@ -57,11 +58,11 @@ present_queue: vk.Queue = .null, // 56
 // swapchain
 swapchain: vk.SwapchainKHR = .null, // 64
 n_swapchain_images: usize = 0, // 72
-swapchain_images: Images = .{.null} ** MAX_IMAGES, // 88
+swapchain_images: Images = @splat(.null), // 88
 swapchain_format: vk.Format = .b8g8r8a8_srgb, // 96
 swapchain_extent: vk.Extent2D = .{ .width = 640, .height = 480 }, // 104
-swapchain_image_views: ImageViews = .{.null} ** MAX_IMAGES, // 120
-swapchain_framebuffers: Framebuffers = .{.null} ** MAX_IMAGES, // 136
+swapchain_image_views: ImageViews = @splat(.null), // 120
+swapchain_framebuffers: Framebuffers = @splat(.null), // 136
 // pipeline
 swapchain_render_pass: vk.RenderPass = .null, // 144
 descriptor_set_layout: vk.DescriptorSetLayout = .null, // 152
@@ -81,18 +82,18 @@ vertex_buffer_memory: vk.DeviceMemory = .null, // 368
 index_buffer: vk.Buffer = .null, // 376
 index_buffer_memory: vk.DeviceMemory = .null, // 384
 // uniform buffers
-uniform_buffers: UniformBuffers = [_]vk.Buffer{.null} ** MAX_FRAMES_IN_FLIGHT, // 408
-uniform_buffer_memories: UniformBufferMemories = [_]vk.DeviceMemory{.null} ** MAX_FRAMES_IN_FLIGHT, // 432
-uniform_buffer_maps: UniformBufferMaps = [_]?*anyopaque{null} ** MAX_FRAMES_IN_FLIGHT, // 456
+uniform_buffers: UniformBuffers = @splat(.null), // 408
+uniform_buffer_memories: UniformBufferMemories = @splat(.null), // 432
+uniform_buffer_maps: UniformBufferMaps = @splat(null), // 456
 // descriptors
 descriptor_pool: vk.DescriptorPool = .null, // 464
-descriptor_sets: DescriptorSets = [_]vk.DescriptorSet{.null} ** MAX_FRAMES_IN_FLIGHT, // 488
+descriptor_sets: DescriptorSets = @splat(.null), // 488
 // command
-command_buffers: CommandBuffers = .{.null} ** MAX_FRAMES_IN_FLIGHT, // 512
+command_buffers: CommandBuffers = @splat(.null), // 512
 // sync
-image_available_semaphores: Semaphores = .{.null} ** MAX_FRAMES_IN_FLIGHT, // 536
-render_finished_semaphores: Semaphores = .{.null} ** MAX_FRAMES_IN_FLIGHT, // 560
-in_flight_fences: Fences = .{.null} ** MAX_FRAMES_IN_FLIGHT, // 584
+image_available_semaphores: Semaphores = @splat(.null), // 536
+render_finished_semaphores: Semaphores = @splat(.null), // 560
+in_flight_fences: Fences = @splat(.null), // 584
 // misc
 current_frame: usize = 0, // 592
 framebuffer_resize: bool = false, // 600
@@ -162,21 +163,27 @@ fn initVulkan(
     indices: []const u16,
 ) !void {
     const ries = [_][*:0]const u8{
-        vk.ExtensionName.win32_surface,
-        vk.ExtensionName.surface,
+        vk.khr_win32_surface_extension_name,
+        vk.khr_surface_extension_name,
     };
 
+    // Vulkan commands are loaded at runtime: the loader, then instance-level
+    // commands, then (after createLogicalDevice) the device's own entry points.
+    try vk.loadLibrary();
+    errdefer vk.unloadLibrary();
     self.instance = try createInstance(app_name, &ries);
     errdefer vk.destroyInstance(self.instance, null);
+    vk.loadInstance(self.instance);
 
     self.surface = try self.createSurface();
     errdefer vk.destroySurfaceKHR(self.instance, self.surface, null);
 
-    const rdes = [_][*:0]const u8{vk.ExtensionName.swapchain};
+    const rdes = [_][*:0]const u8{vk.khr_swapchain_extension_name};
     self.physical_device = try self.pickPhysicalDevice(&rdes);
 
     self.device = try self.createLogicalDevice(&rdes);
     errdefer vk.destroyDevice(self.device, null);
+    vk.loadDevice(self.device);
 
     const qfi: QFI = try .init(self.physical_device, self.surface);
     self.graphics_queue = self.createQueue(qfi.graphics_family.?);
@@ -243,7 +250,11 @@ fn initVulkan(
     errdefer vk.destroyBuffer(self.device, self.index_buffer, null);
     errdefer vk.freeMemory(self.device, self.index_buffer_memory, null);
 
-    try self.createUniformBuffers();
+    self.uniform_buffers = try self.createUniformBuffers();
+    errdefer for (self.uniform_buffers) |b| vk.destroyBuffer(self.device, b, null);
+    self.uniform_buffer_memories = try self.createUniformBufferMemories();
+    errdefer for (self.uniform_buffer_memories) |m| vk.freeMemory(self.device, m, null);
+    try self.mapUniformBuffers(@sizeOf(UBO));
 
     self.descriptor_pool = try self.createDescriptorPool();
     self.descriptor_sets = try self.createDescriptorSets();
@@ -278,8 +289,7 @@ fn coreLoop(
         // std.debug.print("FPS: {}\n", .{fps.update(io)});
         try io.sleep(.{ .nanoseconds = 10 * std.time.ns_per_ms }, .awake);
     }
-    try vk.deviceWaitIdle(self.device)
-        .handle(.FailedToIdleDevice);
+    vk.deviceWaitIdle(self.device) catch return error.FailedToIdleDevice;
 }
 
 fn deinit(self: *@This(), io: std.Io) void {
@@ -300,9 +310,9 @@ fn deinitVulkan(self: *@This()) void {
     vk.destroyRenderPass(self.device, self.swapchain_render_pass, null);
 
     for (0..MAX_FRAMES_IN_FLIGHT) |i| {
+        vk.unmapMemory(self.device, self.uniform_buffer_memories[i]);
         vk.destroyBuffer(self.device, self.uniform_buffers[i], null);
-        vk.freeMemory(self.device, self.uniform_buffers_memories[i], null);
-        vk.unmapMemory(self.device, self.uniform_buffer_maps[i], null);
+        vk.freeMemory(self.device, self.uniform_buffer_memories[i], null);
     }
 
     vk.destroyDescriptorPool(self.device, self.descriptor_pool, null);
@@ -310,7 +320,7 @@ fn deinitVulkan(self: *@This()) void {
     vk.destroySampler(self.device, self.texture_sampler, null);
     vk.destroyImageView(self.device, self.texture_image_view, null);
     vk.destroyImage(self.device, self.texture_image, null);
-    vk.freeMemory(self.device, self.texture_image_memory, null);
+    vk.freeMemory(self.device, self.texture_memory, null);
 
     vk.destroyDescriptorSetLayout(self.device, self.descriptor_set_layout, null);
 
@@ -332,6 +342,7 @@ fn deinitVulkan(self: *@This()) void {
 
     vk.destroySurfaceKHR(self.instance, self.surface, null);
     vk.destroyInstance(self.instance, null);
+    vk.unloadLibrary();
 
     self.window.deinit();
 }
@@ -353,10 +364,10 @@ fn createInstance(
     // add debugutilsmessengercreateinfoext struct - pass in debug callback fn
     // pnext = convert structs into linked lists
     const exts = ExtensionProperties.initInstance() catch
-        return vk.Errors.FailedToEnumerateInstanceExtensions;
+        return Errors.FailedToEnumerateInstanceExtensions;
     // exts.printExtensions();
     if (!exts.ensureExtensions(ries))
-        return vk.Errors.MissingRequiredInstanceExtension;
+        return Errors.MissingRequiredInstanceExtension;
     const create_info: vk.InstanceCreateInfo = .{
         .flags = .empty,
         .p_application_info = &app_info,
@@ -366,26 +377,23 @@ fn createInstance(
         .pp_enabled_extension_names = @ptrCast(ries),
     };
     var instance: vk.Instance = .null;
-    try vk.createInstance(&create_info, null, &instance)
-        .handle(.FailedToCreateInstance);
+    vk.createInstance(&create_info, null, &instance) catch return error.FailedToCreateInstance;
     return instance;
 }
 
 fn pickPhysicalDevice(
     self: *const @This(),
     rdes: []const [*:0]const u8,
-) vk.Errors!vk.PhysicalDevice {
+) Errors!vk.PhysicalDevice {
     var n_devices: u32 = 0;
-    try vk.enumeratePhysicalDevices(self.instance, &n_devices, null)
-        .handle(.FailedToEnumeratePhysicalDevice);
+    _ = vk.enumeratePhysicalDevices(self.instance, &n_devices, null) catch return error.FailedToEnumeratePhysicalDevice;
     var physical_devices: [64]vk.PhysicalDevice = undefined;
-    try vk.enumeratePhysicalDevices(self.instance, &n_devices, &physical_devices)
-        .handle(.FailedToEnumeratePhysicalDevice);
-    if (n_devices == 0) return vk.Errors.NoPhysicalDevicesSupportVulkan;
+    _ = vk.enumeratePhysicalDevices(self.instance, &n_devices, &physical_devices) catch return error.FailedToEnumeratePhysicalDevice;
+    if (n_devices == 0) return Errors.NoPhysicalDevicesSupportVulkan;
     for (physical_devices) |physical_device|
         if (isDeviceSuitable(physical_device, self.surface, rdes))
             return physical_device;
-    return vk.Errors.NoPhysicalDevicesAreSuitableForApp;
+    return Errors.NoPhysicalDevicesAreSuitableForApp;
 }
 
 fn isDeviceSuitable(
@@ -415,16 +423,16 @@ fn checkDeviceExtensionSupport(
     return exts.ensureExtensions(rdes);
 }
 
-fn createSurface(self: *const @This()) vk.Errors!vk.SurfaceKHR {
+fn createSurface(self: *const @This()) Errors!vk.SurfaceKHR {
     var surface: vk.SurfaceKHR = .null;
     switch (@import("builtin").os.tag) {
         .windows => {
+            // The Windows package models handles as enum(isize); Vulkan wants raw pointers.
             const create_info: vk.Win32SurfaceCreateInfoKHR = .{
-                .hinstance = self.window.instance,
-                .hwnd = self.window.hwnd,
+                .hinstance = @ptrFromInt(@as(usize, @bitCast(@intFromEnum(self.window.instance)))),
+                .hwnd = @ptrFromInt(@as(usize, @bitCast(@intFromEnum(self.window.hwnd)))),
             };
-            try vk.createWin32SurfaceKHR(self.instance, &create_info, null, &surface)
-                .handle(.FailedToCreateSurface);
+            vk.createWin32SurfaceKHR(self.instance, &create_info, null, &surface) catch return error.FailedToCreateSurface;
         },
         // .linux => { // TODO: Implement
         //     const create_info: vk.XlibSurfaceCreateInfoKHR = .{
@@ -444,9 +452,9 @@ fn createSurface(self: *const @This()) vk.Errors!vk.SurfaceKHR {
 fn createLogicalDevice(
     self: *const @This(),
     rdes: []const [*:0]const u8,
-) vk.Errors!vk.Device {
+) Errors!vk.Device {
     const qfi = QFI.init(self.physical_device, self.surface) catch
-        return vk.Errors.FailedToGetQueueFamilyIndices;
+        return Errors.FailedToGetQueueFamilyIndices;
     var queue_priority: [1]f32 = [_]f32{1};
     var qcis = [_]vk.DeviceQueueCreateInfo{
         .{
@@ -464,11 +472,11 @@ fn createLogicalDevice(
         .sampler_anisotropy = .true,
     };
     const exts = ExtensionProperties.initDevice(self.physical_device) catch
-        return vk.Errors.FailedToEnumerateDeviceExtensions;
+        return Errors.FailedToEnumerateDeviceExtensions;
     _ = exts;
     // exts.printExtensions();
     const create_info: vk.DeviceCreateInfo = .{
-        .flags = 0,
+        .flags = .empty,
         .queue_create_info_count = if (qfi.isSameFamily()) 1 else 2,
         .p_queue_create_infos = &qcis,
         .p_enabled_features = &feats,
@@ -478,8 +486,7 @@ fn createLogicalDevice(
         .pp_enabled_layer_names = null,
     };
     var device: vk.Device = .null;
-    try vk.createDevice(self.physical_device, &create_info, null, &device)
-        .handle(.FailedToCreateDevice);
+    vk.createDevice(self.physical_device, &create_info, null, &device) catch return error.FailedToCreateDevice;
     return device;
 }
 
@@ -495,7 +502,7 @@ fn createSwapchain(self: *const @This()) !vk.SwapchainKHR {
         image_count = ssd.capabilities.max_image_count;
     }
     const qfi = QFI.init(self.physical_device, self.surface) catch
-        return vk.Errors.FailedToGetQueueFamilyIndices;
+        return Errors.FailedToGetQueueFamilyIndices;
     const queue_family_indices: [2]u32 = [_]u32{
         qfi.graphics_family.?,
         qfi.present_family.?,
@@ -518,8 +525,7 @@ fn createSwapchain(self: *const @This()) !vk.SwapchainKHR {
         .old_swapchain = .null,
     };
     var swapchain: vk.SwapchainKHR = .null;
-    try vk.createSwapchainKHR(self.device, &create_info, null, &swapchain)
-        .handle(.FailedToCreateSwapchain);
+    vk.createSwapchainKHR(self.device, &create_info, null, &swapchain) catch return error.FailedToCreateSwapchain;
     return swapchain;
 }
 
@@ -531,7 +537,7 @@ fn destroySwapchain(self: *@This()) void {
     vk.destroySwapchainKHR(self.device, self.swapchain, null);
 }
 
-fn recreateSwapchain(self: *@This()) vk.Errors!void {
+fn recreateSwapchain(self: *@This()) Errors!void {
     vk.deviceWaitIdle(self.device);
 
     self.swapchain = try self.createSwapchain();
@@ -545,38 +551,36 @@ fn createQueue(self: *const @This(), family: u32) vk.Queue {
     return queue;
 }
 
-fn getNumSwapchainImages(self: *const @This()) vk.Errors!u32 {
+fn getNumSwapchainImages(self: *const @This()) Errors!u32 {
     var n_images: u32 = 0;
-    try vk.getSwapchainImagesKHR(
+    _ = vk.getSwapchainImagesKHR(
         self.device,
         self.swapchain,
         &n_images,
         null,
-    )
-        .handle(.FailedToGetNumSwapchainImages);
+    ) catch return error.FailedToGetNumSwapchainImages;
     if (n_images == 0)
-        return vk.Errors.FailedToGetNumSwapchainImages;
+        return Errors.FailedToGetNumSwapchainImages;
     return n_images;
 }
 
 fn createSwapchainImages(
     self: *const @This(),
-) vk.Errors!Images {
+) Errors!Images {
     var n_images: u32 = @truncate(self.n_swapchain_images);
-    var images: Images = .{.null} ** MAX_IMAGES;
-    try vk.getSwapchainImagesKHR(
+    var images: Images = @splat(.null);
+    _ = vk.getSwapchainImagesKHR(
         self.device,
         self.swapchain,
         &n_images,
         &images,
-    )
-        .handle(.FailedToGetSwapchainImages);
+    ) catch return error.FailedToGetSwapchainImages;
     std.debug.assert(n_images == self.n_swapchain_images);
     return images;
 }
 
-fn createSwapchainImageViews(self: *const @This()) vk.Errors!ImageViews {
-    var views: ImageViews = .{.null} ** MAX_IMAGES;
+fn createSwapchainImageViews(self: *const @This()) Errors!ImageViews {
+    var views: ImageViews = @splat(.null);
     for (0..self.n_swapchain_images) |i| {
         views[i] = try self.createImageView(
             self.swapchain_images[i],
@@ -586,7 +590,7 @@ fn createSwapchainImageViews(self: *const @This()) vk.Errors!ImageViews {
     return views;
 }
 
-fn createRenderPass(self: *const @This()) vk.Errors!vk.RenderPass {
+fn createRenderPass(self: *const @This()) Errors!vk.RenderPass {
     const color_attachments = [_]vk.AttachmentDescription{
         .{
             .format = self.swapchain_format,
@@ -614,7 +618,7 @@ fn createRenderPass(self: *const @This()) vk.Errors!vk.RenderPass {
     };
     const dependencies = [1]vk.SubpassDependency{
         .{
-            .src_subpass = vk.SubpassExternal,
+            .src_subpass = vk.subpass_external,
             .dst_subpass = 0,
             .src_stage_mask = .init(.color_attachment_output_bit),
             .src_access_mask = .empty,
@@ -631,12 +635,11 @@ fn createRenderPass(self: *const @This()) vk.Errors!vk.RenderPass {
         .p_dependencies = &dependencies,
     };
     var render_pass: vk.RenderPass = .null;
-    try vk.createRenderPass(self.device, &create_info, null, &render_pass)
-        .handle(.FailedToCreateRenderPass);
+    vk.createRenderPass(self.device, &create_info, null, &render_pass) catch return error.FailedToCreateRenderPass;
     return render_pass;
 }
 
-fn createDescriptorSetLayout(self: *const @This()) vk.Errors!vk.DescriptorSetLayout {
+fn createDescriptorSetLayout(self: *const @This()) Errors!vk.DescriptorSetLayout {
     const ubo_layout_binding: vk.DescriptorSetLayoutBinding = .{
         .binding = 0,
         .descriptor_count = 1,
@@ -662,21 +665,19 @@ fn createDescriptorSetLayout(self: *const @This()) vk.Errors!vk.DescriptorSetLay
     };
 
     var layout: vk.DescriptorSetLayout = .null;
-    try vk.createDescriptorSetLayout(self.device, &create_info, null, &layout)
-        .handle(.FailedToCreateDescriptorSetLayout);
+    vk.createDescriptorSetLayout(self.device, &create_info, null, &layout) catch return error.FailedToCreateDescriptorSetLayout;
     return layout;
 }
 
-fn createPipelineLayout(self: *const @This()) vk.Errors!vk.PipelineLayout {
+fn createPipelineLayout(self: *const @This()) Errors!vk.PipelineLayout {
     const create_info: vk.PipelineLayoutCreateInfo = .{
         .set_layout_count = 1,
-        .p_set_layouts = &self.descriptor_set_layout,
+        .p_set_layouts = (&self.descriptor_set_layout)[0..1],
         .push_constant_range_count = 0,
         .p_push_constant_ranges = null,
     };
     var layout: vk.PipelineLayout = .null;
-    try vk.createPipelineLayout(self.device, &create_info, null, &layout)
-        .handle(.FailedToCreatePipelineLayout);
+    vk.createPipelineLayout(self.device, &create_info, null, &layout) catch return error.FailedToCreatePipelineLayout;
     return layout;
 }
 
@@ -687,7 +688,7 @@ fn createGraphicsPipeline(
     shader_filenames: []const []const u8,
 ) !vk.Pipeline {
     _ = gpa;
-    var sms = [_]vk.ShaderModule{.null} ** 2;
+    var sms: [2]vk.ShaderModule = @splat(.null);
     var data: [4096]u8 = undefined;
     for (shader_filenames, 0..) |shader_filename, i| {
         const sc = self.readShaderSPV(io, shader_filename, &data) catch unreachable;
@@ -762,7 +763,7 @@ fn createGraphicsPipeline(
         .logic_op_enable = .false,
         .logic_op = .copy,
         .attachment_count = 1,
-        .p_attachments = &color_blend_attachment,
+        .p_attachments = (&color_blend_attachment)[0..1],
         .blend_constants = [4]f32{ 0, 0, 0, 0 },
     };
     const dynamic_states = [_]vk.DynamicState{
@@ -792,8 +793,7 @@ fn createGraphicsPipeline(
         // .base_pipeline_index = -1,
     };
     var pipeline: vk.Pipeline = .null;
-    try vk.createGraphicsPipelines(self.device, .null, 1, &create_info, null, &pipeline)
-        .handle(.FailedToCreatePipeline);
+    _ = vk.createGraphicsPipelines(self.device, .null, 1, (&create_info)[0..1], null, (&pipeline)[0..1]) catch return error.FailedToCreatePipeline;
     return pipeline;
 }
 
@@ -833,19 +833,18 @@ fn readShaderSPV(
 fn createShaderModule(
     self: *const @This(),
     code: []const u8,
-) vk.Errors!vk.ShaderModule {
+) Errors!vk.ShaderModule {
     const create_info = vk.ShaderModuleCreateInfo{
         .code_size = @truncate(code.len),
         .p_code = @ptrCast(@alignCast(code)),
     };
     var shader_module: vk.ShaderModule = .null;
-    try vk.createShaderModule(self.device, &create_info, null, &shader_module)
-        .handle(.FailedToCreateShaderModule);
+    vk.createShaderModule(self.device, &create_info, null, &shader_module) catch return error.FailedToCreateShaderModule;
     return shader_module;
 }
 
-fn createSwapchainFramebuffers(self: *const @This()) vk.Errors!Framebuffers {
-    var framebuffers: Framebuffers = .{.null} ** MAX_IMAGES;
+fn createSwapchainFramebuffers(self: *const @This()) Errors!Framebuffers {
+    var framebuffers: Framebuffers = @splat(.null);
     for (
         self.swapchain_images,
         self.swapchain_image_views,
@@ -863,24 +862,22 @@ fn createSwapchainFramebuffers(self: *const @This()) vk.Errors!Framebuffers {
                     .height = self.swapchain_extent.height,
                     .layers = 1,
                 };
-                try vk.createFramebuffer(self.device, &create_info, null, &framebuffers[i])
-                    .handle(.FailedToCreateFramebuffer);
+                vk.createFramebuffer(self.device, &create_info, null, &framebuffers[i]) catch return error.FailedToCreateFramebuffer;
             },
         }
     }
     return framebuffers;
 }
 
-fn createCommandPool(self: *const @This()) vk.Errors!vk.CommandPool {
+fn createCommandPool(self: *const @This()) Errors!vk.CommandPool {
     const qfi = QFI.init(self.physical_device, self.surface) catch
-        return vk.Errors.FailedToGetQueueFamilyIndices;
+        return Errors.FailedToGetQueueFamilyIndices;
     const create_info = vk.CommandPoolCreateInfo{
         .flags = .init(.reset_command_buffer_bit),
         .queue_family_index = qfi.graphics_family.?,
     };
     var pool: vk.CommandPool = .null;
-    try vk.createCommandPool(self.device, &create_info, null, &pool)
-        .handle(.FailedToCreateCommandPool);
+    vk.createCommandPool(self.device, &create_info, null, &pool) catch return error.FailedToCreateCommandPool;
     return pool;
 }
 
@@ -888,15 +885,14 @@ inline fn createVulkanBuffer(
     self: *const @This(),
     size: vk.DeviceSize,
     usage: vk.BufferUsageFlags,
-) vk.Errors!vk.Buffer {
+) Errors!vk.Buffer {
     const create_info = vk.BufferCreateInfo{
         .size = size,
         .usage = usage,
         .sharing_mode = .exclusive,
     };
     var buffer: vk.Buffer = .null;
-    try vk.createBuffer(self.device, &create_info, null, &buffer)
-        .handle(.FailedToCreateBuffer);
+    vk.createBuffer(self.device, &create_info, null, &buffer) catch return error.FailedToCreateBuffer;
     return buffer;
 }
 
@@ -904,7 +900,7 @@ inline fn createVulkanBufferMemory(
     self: *const @This(),
     buffer: vk.Buffer,
     props: vk.MemoryPropertyFlags,
-) vk.Errors!vk.DeviceMemory {
+) Errors!vk.DeviceMemory {
     var mem_reqs: vk.MemoryRequirements = .{};
     vk.getBufferMemoryRequirements(self.device, buffer, &mem_reqs);
     const alloc_info = vk.MemoryAllocateInfo{
@@ -912,10 +908,8 @@ inline fn createVulkanBufferMemory(
         .memory_type_index = try self.findMemoryType(mem_reqs.memory_type_bits, props),
     };
     var memory: vk.DeviceMemory = .null;
-    try vk.allocateMemory(self.device, &alloc_info, null, &memory)
-        .handle(.FailedToAllocateBufferMemory);
-    try vk.bindBufferMemory(self.device, buffer, memory, 0)
-        .handle(.FailedToBindBufferMemory);
+    vk.allocateMemory(self.device, &alloc_info, null, &memory) catch return error.FailedToAllocateBufferMemory;
+    vk.bindBufferMemory(self.device, buffer, memory, 0) catch return error.FailedToBindBufferMemory;
     return memory;
 }
 
@@ -925,10 +919,9 @@ inline fn mapVulkanMemory(
     data: []const T,
     size: vk.DeviceSize,
     memory: vk.DeviceMemory,
-) vk.Errors!void {
+) Errors!void {
     var gpu_ptr: ?*anyopaque = null;
-    try vk.mapMemory(self.device, memory, 0, size, .empty, &gpu_ptr)
-        .handle(.FailedToMapMemory);
+    vk.mapMemory(self.device, memory, 0, size, .empty, &gpu_ptr) catch return error.FailedToMapMemory;
     defer vk.unmapMemory(self.device, memory);
     var gpu_data: [*]T = @ptrCast(@alignCast(gpu_ptr));
     @memcpy(gpu_data[0..data.len], data);
@@ -938,8 +931,8 @@ fn createBuffer(
     self: *const @This(),
     T: type,
     data: []const T,
-    props: vk.MemoryPropertyFlags,
-) vk.Errors!VulkanBuffer {
+    usage: vk.BufferUsageFlags,
+) Errors!VulkanBuffer {
     const size: vk.DeviceSize = @sizeOf(T) * data.len;
     // buffer
     const staging_buffer = try self.createVulkanBuffer(size, .init(.transfer_src_bit));
@@ -953,7 +946,7 @@ fn createBuffer(
     // map memory
     try self.mapVulkanMemory(T, data, size, staging_buffer_memory);
     // copy commands
-    const buffer = try self.createVulkanBuffer(size, props);
+    const buffer = try self.createVulkanBuffer(size, usage);
     const buffer_memory = try self.createVulkanBufferMemory(
         buffer,
         .init(.device_local_bit),
@@ -971,16 +964,16 @@ fn copyVulkanBuffer(
     src: vk.Buffer,
     dst: vk.Buffer,
     size: vk.DeviceSize,
-) vk.Errors!void {
+) Errors!void {
     const command_buffer = try self.beginSingleTimeCommands();
     const copy_region: vk.BufferCopy = .{
         .size = size,
     };
-    vk.cmdCopyBuffer(command_buffer, src, dst, 1, &copy_region);
+    vk.cmdCopyBuffer(command_buffer, src, dst, 1, (&copy_region)[0..1]);
     try self.endSingleTimeCommands(command_buffer);
 }
 
-fn beginSingleTimeCommands(self: *const @This()) vk.Errors!vk.CommandBuffer {
+fn beginSingleTimeCommands(self: *const @This()) Errors!vk.CommandBuffer {
     const alloc_info: vk.CommandBufferAllocateInfo = .{
         .level = .primary,
         .command_pool = self.command_pool,
@@ -988,14 +981,12 @@ fn beginSingleTimeCommands(self: *const @This()) vk.Errors!vk.CommandBuffer {
     };
 
     var command_buffer: vk.CommandBuffer = .null;
-    try vk.allocateCommandBuffers(self.device, &alloc_info, &command_buffer)
-        .handle(.FailedToAllocateCommandBuffers);
+    vk.allocateCommandBuffers(self.device, &alloc_info, (&command_buffer)[0..1]) catch return error.FailedToAllocateCommandBuffers;
 
     const begin_info: vk.CommandBufferBeginInfo = .{
-        .flags = .one_time_submit_bit,
+        .flags = .init(.one_time_submit_bit),
     };
-    try vk.beginCommandBuffer(command_buffer, &begin_info)
-        .handle(.FailedToBeginCommandBuffer);
+    vk.beginCommandBuffer(command_buffer, &begin_info) catch return error.FailedToBeginCommandBuffer;
 
     return command_buffer;
 }
@@ -1004,17 +995,14 @@ fn endSingleTimeCommands(
     self: *const @This(),
     command_buffer: vk.CommandBuffer,
 ) !void {
-    try vk.endCommandBuffer(command_buffer)
-        .handle(.FailedToEndCommandBuffer);
+    vk.endCommandBuffer(command_buffer) catch return error.FailedToEndCommandBuffer;
     const submit_info: vk.SubmitInfo = .{
         .command_buffer_count = 1,
-        .p_command_buffers = &command_buffer,
+        .p_command_buffers = (&command_buffer)[0..1],
     };
-    try vk.queueSubmit(self.graphics_queue, 1, &submit_info, .null)
-        .handle(.FailedToSubmitQueue);
-    try vk.queueWaitIdle(self.graphics_queue)
-        .handle(.FailedToIdleQueue);
-    vk.freeCommandBuffers(self.device, self.command_pool, 1, &command_buffer);
+    vk.queueSubmit(self.graphics_queue, 1, (&submit_info)[0..1], .null) catch return error.FailedToSubmitQueue;
+    vk.queueWaitIdle(self.graphics_queue) catch return error.FailedToIdleQueue;
+    vk.freeCommandBuffers(self.device, self.command_pool, 1, (&command_buffer)[0..1]);
 }
 
 fn createTextureImage(
@@ -1032,11 +1020,7 @@ fn createTextureImage(
     });
     defer img.deinit(gpa);
 
-    const image_size: vk.DeviceSize = img.width * img.height * switch (img.pixels) {
-        .gray => 1,
-        .rgb => 3,
-        .rgba => 4,
-    };
+    const image_size: vk.DeviceSize = img.width * img.height * std.meta.activeTag(img.pixels).bytesPerPixel();
 
     const staging_buffer = try self.createVulkanBuffer(image_size, .init(.transfer_src_bit));
     defer vk.destroyBuffer(self.device, staging_buffer, null);
@@ -1047,19 +1031,13 @@ fn createTextureImage(
     );
     defer vk.freeMemory(self.device, staging_buffer_memory, null);
 
-    switch (img.pixels) {
-        inline else => |pixels| {
-            const slice = try pixels.slice(gpa, .{ .start = 0, .end = pixels.len });
-            defer gpa.free(slice);
-            try self.mapVulkanMemory(@TypeOf(slice[0]), slice, image_size, staging_buffer_memory);
-        },
-    }
+    try self.mapVulkanMemory(u8, img.pixels.asBytes(), image_size, staging_buffer_memory);
 
     var texture: VulkanImage = undefined;
     texture.image = try self.createImage(
         .{ .width = img.width, .height = img.height },
         .r8g8b8a8_srgb,
-        .init(.optimal),
+        .optimal,
         .initMany(&.{ .transfer_dst_bit, .sampled_bit }),
     );
     texture.memory = try self.createImageMemory(
@@ -1095,9 +1073,9 @@ fn createImage(
     self: *const @This(),
     extent: vk.Extent3D,
     format: vk.Format,
-    tiling: vk.ImageTilingFlags,
+    tiling: vk.ImageTiling,
     usage: vk.ImageUsageFlags,
-) vk.Errors!vk.Image {
+) Errors!vk.Image {
     const create_info: vk.ImageCreateInfo = .{
         .image_type = .@"2d",
         .extent = extent,
@@ -1111,8 +1089,7 @@ fn createImage(
         .sharing_mode = .exclusive,
     };
     var image: vk.Image = .null;
-    try vk.createImage(self.device, &create_info, null, &image)
-        .handle(.FailedToCreateImage);
+    vk.createImage(self.device, &create_info, null, &image) catch return error.FailedToCreateImage;
     return image;
 }
 
@@ -1120,7 +1097,7 @@ fn createImageMemory(
     self: *const @This(),
     image: vk.Image,
     props: vk.MemoryPropertyFlags,
-) vk.Errors!vk.DeviceMemory {
+) Errors!vk.DeviceMemory {
     var mem_reqs: vk.MemoryRequirements = .{};
     vk.getImageMemoryRequirements(self.device, image, &mem_reqs);
 
@@ -1130,10 +1107,8 @@ fn createImageMemory(
     };
 
     var memory: vk.DeviceMemory = .null;
-    try vk.allocateMemory(self.device, &alloc_info, null, &memory)
-        .handle(.FailedToAllocateImageMemory);
-    try vk.bindImageMemory(self.device, image, memory, 0)
-        .handle(.FailedToBindImageMemory);
+    vk.allocateMemory(self.device, &alloc_info, null, &memory) catch return error.FailedToAllocateImageMemory;
+    vk.bindImageMemory(self.device, image, memory, 0) catch return error.FailedToBindImageMemory;
     return memory;
 }
 
@@ -1151,8 +1126,8 @@ fn transitionImageLayout(
     var barrier: vk.ImageMemoryBarrier = .{
         .old_layout = old_layout,
         .new_layout = new_layout,
-        .src_queue_family_index = vk.QueueFamilyIgnored,
-        .dst_queue_family_index = vk.QueueFamilyIgnored,
+        .src_queue_family_index = vk.queue_family_ignored,
+        .dst_queue_family_index = vk.queue_family_ignored,
         .image = image,
         .subresource_range = .{
             .aspect_mask = .init(.color_bit),
@@ -1180,20 +1155,20 @@ fn transitionImageLayout(
         src_stage = .init(.transfer_bit);
         dst_stage = .init(.fragment_shader_bit);
     } else {
-        return vk.Errors.UnsupportedLayoutTransition;
+        return Errors.UnsupportedLayoutTransition;
     }
 
     vk.cmdPipelineBarrier(
         command_buffer,
         src_stage,
         dst_stage,
-        .init(.null),
+        .empty,
         0,
         null,
         0,
         null,
         1,
-        &barrier,
+        (&barrier)[0..1],
     );
     try self.endSingleTimeCommands(command_buffer);
 }
@@ -1226,7 +1201,7 @@ fn copyBufferToImage(
         image,
         .transfer_dst_optimal,
         1,
-        &region,
+        (&region)[0..1],
     );
     try self.endSingleTimeCommands(command_buffer);
 }
@@ -1235,7 +1210,7 @@ fn createImageView(
     self: *const @This(),
     image: vk.Image,
     format: vk.Format,
-) vk.Errors!vk.ImageView {
+) Errors!vk.ImageView {
     const create_info = vk.ImageViewCreateInfo{
         .image = image,
         .view_type = .@"2d",
@@ -1249,12 +1224,11 @@ fn createImageView(
         },
     };
     var view: vk.ImageView = .null;
-    try vk.createImageView(self.device, &create_info, null, &view)
-        .handle(.FailedToCreateTextureImageView);
+    vk.createImageView(self.device, &create_info, null, &view) catch return error.FailedToCreateTextureImageView;
     return view;
 }
 
-fn createTextureImageView(self: *const @This()) vk.Errors!vk.ImageView {
+fn createTextureImageView(self: *const @This()) Errors!vk.ImageView {
     return self.createImageView(self.texture_image, .r8g8b8a8_srgb);
 }
 
@@ -1277,21 +1251,20 @@ fn createTextureSampler(self: *const @This()) !vk.Sampler {
         .mipmap_mode = .linear,
     };
     var sampler: vk.Sampler = .null;
-    try vk.createSampler(self.device, &create_info, null, &sampler)
-        .handle(.FailedToCreateTextureSampler);
+    vk.createSampler(self.device, &create_info, null, &sampler) catch return error.FailedToCreateTextureSampler;
     return sampler;
 }
 
 fn createUniformBuffers(self: *const @This()) !UniformBuffers {
-    var ubos: UniformBuffers = [_]vk.Buffer{.null} ** MAX_FRAMES_IN_FLIGHT;
+    var ubos: UniformBuffers = @splat(.null);
     for (0..MAX_FRAMES_IN_FLIGHT) |i| {
-        ubos[i] = try self.createVulkanBuffer(size, .init(.uniform_buffer_bit));
+        ubos[i] = try self.createVulkanBuffer(@sizeOf(UBO), .init(.uniform_buffer_bit));
     }
     return ubos;
 }
 
 fn createUniformBufferMemories(self: *const @This()) !UniformBufferMemories {
-    var mems: UniformBufferMemories = [_]vk.DeviceMemory{.null} ** MAX_FRAMES_IN_FLIGHT;
+    var mems: UniformBufferMemories = @splat(.null);
     for (0..MAX_FRAMES_IN_FLIGHT) |i| {
         mems[i] = try self.createVulkanBufferMemory(
             self.uniform_buffers[i],
@@ -1301,9 +1274,11 @@ fn createUniformBufferMemories(self: *const @This()) !UniformBufferMemories {
     return mems;
 }
 
-fn mapUniformBuffers(self: *const @This(), size: vk.DeviceSize) !void {
+/// Persistently maps each frame's uniform buffer memory into `uniform_buffer_maps`.
+fn mapUniformBuffers(self: *@This(), size: vk.DeviceSize) Errors!void {
     for (0..MAX_FRAMES_IN_FLIGHT) |i| {
-        vk.mapMemory(self.device, self.uniform_buffers[i], 0, size, 0, self.uniform_buffer_maps[i]);
+        vk.mapMemory(self.device, self.uniform_buffer_memories[i], 0, size, .empty, &self.uniform_buffer_maps[i]) catch
+            return error.FailedToMapMemory;
     }
 }
 
@@ -1330,7 +1305,7 @@ fn mapUniformBuffers(self: *const @This(), size: vk.DeviceSize) !void {
 //     }
 // }
 
-fn createDescriptorPool(self: *const @This()) vk.Errors!vk.DescriptorPool {
+fn createDescriptorPool(self: *const @This()) Errors!vk.DescriptorPool {
     const uniform_descriptor_pool_size: vk.DescriptorPoolSize = .{
         .type = .uniform_buffer,
         .descriptor_count = @truncate(self.uniform_buffers.len),
@@ -1349,20 +1324,20 @@ fn createDescriptorPool(self: *const @This()) vk.Errors!vk.DescriptorPool {
         .max_sets = MAX_FRAMES_IN_FLIGHT,
     };
     var pool: vk.DescriptorPool = .null;
-    try vk.createDescriptorPool(self.device, &create_info, null, &pool)
-        .handle(.FailedToCreateDescriptorPool);
+    vk.createDescriptorPool(self.device, &create_info, null, &pool) catch return error.FailedToCreateDescriptorPool;
     return pool;
 }
 
-fn createDescriptorSets(self: *const @This()) vk.Errors!DescriptorSets {
-    var layouts = [_]vk.DescriptorSetLayout{.null} ** MAX_FRAMES_IN_FLIGHT;
+fn createDescriptorSets(self: *const @This()) Errors!DescriptorSets {
+    // One set per frame in flight, all with the same layout.
+    const layouts: [MAX_FRAMES_IN_FLIGHT]vk.DescriptorSetLayout = @splat(self.descriptor_set_layout);
     const alloc_info: vk.DescriptorSetAllocateInfo = .{
         .descriptor_pool = self.descriptor_pool,
         .descriptor_set_count = @truncate(layouts.len),
         .p_set_layouts = &layouts,
     };
-    try vk.allocateDescriptorSets(self.device, &alloc_info, &layouts)
-        .handle(.FailedToAllocateDescriptorSets);
+    var sets: DescriptorSets = @splat(.null);
+    vk.allocateDescriptorSets(self.device, &alloc_info, &sets) catch return error.FailedToAllocateDescriptorSets;
 
     for (0..MAX_FRAMES_IN_FLIGHT) |i| {
         const buffer_info: vk.DescriptorBufferInfo = .{
@@ -1377,40 +1352,40 @@ fn createDescriptorSets(self: *const @This()) vk.Errors!DescriptorSets {
             .sampler = self.texture_sampler,
         };
 
-        const writes = [_]vk.DescriptorSetWrite{
+        const writes = [_]vk.WriteDescriptorSet{
             .{
-                .dst_set = self.descriptor_sets[i],
+                .dst_set = sets[i],
                 .dst_binding = 0,
                 .dst_array_element = 0,
                 .descriptor_type = .uniform_buffer,
                 .descriptor_count = 1,
-                .p_buffer_info = &buffer_info,
+                .p_buffer_info = (&buffer_info)[0..1],
             },
             .{
-                .dst_set = self.descriptor_sets[i],
+                .dst_set = sets[i],
                 .dst_binding = 1,
                 .dst_array_element = 0,
                 .descriptor_type = .combined_image_sampler,
                 .descriptor_count = 1,
-                .p_image_info = &image_info,
+                .p_image_info = (&image_info)[0..1],
             },
         };
 
         vk.updateDescriptorSets(self.device, @truncate(writes.len), &writes, 0, null);
     }
+    return sets;
 }
 
 fn createCommandBuffers(
     self: *const @This(),
-) vk.Errors!CommandBuffers {
+) Errors!CommandBuffers {
     const alloc_info = vk.CommandBufferAllocateInfo{
         .command_pool = self.command_pool,
         .level = .primary,
         .command_buffer_count = MAX_FRAMES_IN_FLIGHT,
     };
-    var command_buffers: CommandBuffers = .{.null} ** MAX_FRAMES_IN_FLIGHT;
-    try vk.allocateCommandBuffers(self.device, &alloc_info, &command_buffers)
-        .handle(.FailedToAllocateCommandBuffers);
+    var command_buffers: CommandBuffers = @splat(.null);
+    vk.allocateCommandBuffers(self.device, &alloc_info, &command_buffers) catch return error.FailedToAllocateCommandBuffers;
     return command_buffers;
 }
 
@@ -1419,10 +1394,9 @@ fn recordCommandBuffer(
     command_buffer: vk.CommandBuffer,
     image_index: u32,
     n_indices: u32,
-) vk.Errors!void {
+) Errors!void {
     const cb_begin_info: vk.CommandBufferBeginInfo = .{};
-    try vk.beginCommandBuffer(command_buffer, &cb_begin_info)
-        .handle(.FailedToBeginRecordingCommandBuffer);
+    vk.beginCommandBuffer(command_buffer, &cb_begin_info) catch return error.FailedToBeginRecordingCommandBuffer;
 
     const clear_colors = [_]vk.ClearValue{
         vk.ClearValue{ .color = .{
@@ -1451,13 +1425,13 @@ fn recordCommandBuffer(
         .min_depth = 0,
         .max_depth = 1,
     };
-    vk.cmdSetViewport(command_buffer, 0, 1, &viewport);
+    vk.cmdSetViewport(command_buffer, 0, 1, (&viewport)[0..1]);
 
     const scissor: vk.Rect2D = .{
         .offset = .{ .x = 0, .y = 0 },
         .extent = self.swapchain_extent,
     };
-    vk.cmdSetScissor(command_buffer, 0, 1, &scissor);
+    vk.cmdSetScissor(command_buffer, 0, 1, (&scissor)[0..1]);
 
     const vertex_buffers = [_]vk.Buffer{self.vertex_buffer};
     const offsets = [_]vk.DeviceSize{0};
@@ -1474,46 +1448,42 @@ fn recordCommandBuffer(
         null,
     );
 
-    vk.cmdDrawIndexed(command_buffer, @truncate(indices.len), 1, 0, 0, 0);
+    vk.cmdDrawIndexed(command_buffer, n_indices, 1, 0, 0, 0);
     // vk.cmdDraw(command_buffer, @truncate(vertices.len), 1, 0, 0);
 
     vk.cmdEndRenderPass(command_buffer);
 
-    try vk.endCommandBuffer(command_buffer)
-        .handle(.FailedToRecordCommandBuffer);
+    vk.endCommandBuffer(command_buffer) catch return error.FailedToRecordCommandBuffer;
 }
 
-fn createFences(self: *const @This()) vk.Errors!Fences {
+fn createFences(self: *const @This()) Errors!Fences {
     const create_info: vk.FenceCreateInfo = .{
         .flags = .init(.signaled_bit),
     };
-    var fences: Fences = .{.null} ** MAX_FRAMES_IN_FLIGHT;
+    var fences: Fences = @splat(.null);
     for (0..MAX_FRAMES_IN_FLIGHT) |i| {
-        try vk.createFence(self.device, &create_info, null, &fences[i])
-            .handle(.FailedToCreateFence);
+        vk.createFence(self.device, &create_info, null, &fences[i]) catch return error.FailedToCreateFence;
     }
     return fences;
 }
 
-fn createSemaphores(self: *const @This()) vk.Errors!Semaphores {
+fn createSemaphores(self: *const @This()) Errors!Semaphores {
     const create_info: vk.SemaphoreCreateInfo = .{};
-    var semaphores: Semaphores = .{.null} ** MAX_FRAMES_IN_FLIGHT;
+    var semaphores: Semaphores = @splat(.null);
     for (0..MAX_FRAMES_IN_FLIGHT) |i| {
-        try vk.createSemaphore(self.device, &create_info, null, &semaphores[i])
-            .handle(.FailedToCreateSemaphore);
+        vk.createSemaphore(self.device, &create_info, null, &semaphores[i]) catch return error.FailedToCreateSemaphore;
     }
     return semaphores;
 }
 
-fn drawFrame(self: *@This(), indices: []const u16) vk.Errors!void {
-    try vk.waitForFences(
+fn drawFrame(self: *@This(), indices: []const u16) Errors!void {
+    _ = vk.waitForFences(
         self.device,
         1,
         &self.in_flight_fences[self.current_frame],
         .true,
         std.math.maxInt(u64),
-    )
-        .handle(.FailedToWaitForFence);
+    ) catch return error.FailedToWaitForFence;
 
     var image_index: u32 = undefined;
     switch (vk.acquireNextImageKHR(
@@ -1531,11 +1501,9 @@ fn drawFrame(self: *@This(), indices: []const u16) vk.Errors!void {
     }
     // .handle(.FailedToAcquireNextImage);
 
-    try vk.resetFences(self.device, 1, &self.in_flight_fences[self.current_frame])
-        .handle(.FailedToResetFences);
+    vk.resetFences(self.device, 1, self.in_flight_fences[self.current_frame..][0..1]) catch return error.FailedToResetFences;
 
-    try vk.resetCommandBuffer(self.command_buffers[self.current_frame], .empty)
-        .handle(.FailedToResetCommandBuffer);
+    vk.resetCommandBuffer(self.command_buffers[self.current_frame], .empty) catch return error.FailedToResetCommandBuffer;
     try self.recordCommandBuffer(self.command_buffers[self.current_frame], image_index, indices.len);
 
     const wait_semaphores = [1]vk.Semaphore{
@@ -1554,13 +1522,12 @@ fn drawFrame(self: *@This(), indices: []const u16) vk.Errors!void {
         .signal_semaphore_count = @truncate(signal_semaphores.len),
         .p_signal_semaphores = &signal_semaphores,
     };
-    try vk.queueSubmit(
+    vk.queueSubmit(
         self.graphics_queue,
         1,
         &submit_info,
         self.in_flight_fences[self.current_frame],
-    )
-        .handle(.FailedToSubmitDrawCommandBuffer);
+    ) catch return error.FailedToSubmitDrawCommandBuffer;
     const swapchains = [1]vk.SwapchainKHR{self.swapchain};
     const present_info = vk.PresentInfoKHR{
         .wait_semaphore_count = @truncate(signal_semaphores.len),
@@ -1570,8 +1537,7 @@ fn drawFrame(self: *@This(), indices: []const u16) vk.Errors!void {
         .p_image_indices = &image_index,
         // .p_results = null,
     };
-    try vk.queuePresentKHR(self.present_queue, &present_info)
-        .handle(.FailedToPresentQueue);
+    _ = vk.queuePresentKHR(self.present_queue, &present_info) catch return error.FailedToPresentQueue;
     self.current_frame = @mod(self.current_frame, MAX_FRAMES_IN_FLIGHT);
 }
 
@@ -1582,5 +1548,5 @@ fn findMemoryType(self: *const @This(), type_filter: u32, props: vk.MemoryProper
         if ((type_filter & (@as(@TypeOf(type_filter), 1) << @truncate(i))) > 0 and
             mem_props.memory_types[i].property_flags.isSupersetOf(props))
             return @truncate(i);
-    } else return vk.Errors.FailedToFindSuitableMemoryType;
+    } else return Errors.FailedToFindSuitableMemoryType;
 }

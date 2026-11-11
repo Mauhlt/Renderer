@@ -1,11 +1,12 @@
 const std = @import("std");
 const vk = @import("Vulkan");
+const Errors = @import("errors.zig").Errors;
 const log = std.log.scoped(.qfi);
 
 graphics_family: ?u32 = null,
 present_family: ?u32 = null,
 
-pub fn init(physical_device: vk.PhysicalDevice, surface: vk.SurfaceKHR) vk.Errors!@This() {
+pub fn init(physical_device: vk.PhysicalDevice, surface: vk.SurfaceKHR) Errors!@This() {
     var self: @This() = .{};
     var n_families: u32 = 0;
     vk.getPhysicalDeviceQueueFamilyProperties(physical_device, &n_families, null);
@@ -15,12 +16,12 @@ pub fn init(physical_device: vk.PhysicalDevice, surface: vk.SurfaceKHR) vk.Error
         if (family.queue_flags.contains(.graphics_bit))
             self.graphics_family = @truncate(i);
         var present_support: vk.Bool32 = .false;
-        try vk.getPhysicalDeviceSurfaceSupportKHR(
+        vk.getPhysicalDeviceSurfaceSupportKHR(
             physical_device,
             @truncate(i),
             surface,
             &present_support,
-        ).handle(.FailedToGetPhysicalDeviceSurfaceSupport);
+        ) catch return error.FailedToGetPhysicalDeviceSurfaceSupport;
         switch (present_support) {
             .true => self.present_family = @truncate(i),
             else => {},

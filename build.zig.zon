@@ -4,18 +4,9 @@
     .fingerprint = 0x8efc3ca5a6851ba,
     .minimum_zig_version = "0.16.0-dev.2676+4e2cec265",
     .dependencies = .{
-        .Image = .{
-            .url = "git+https://github.com/Mauhlt/Image.git#0cdf9d16e9f1434d08cfbf4ccea80d679c27d2e8",
-            .hash = "Image-0.0.0-0z0ITLkBhAAuEW_dUgdsmhA5AQGmdAu6h-_uAmfYgSL8",
-        },
-        .Vulkan = .{
-            .url = "git+https://github.com/Mauhlt/Vulkan.git#eb9dad69a342098734790950a2d051aa0d4ee3ce",
-            .hash = "Vulkan-0.0.0-9v7hoUdzEQBSNZ_cAVxFjA2UJqjFWqq7TJjAYBpjkvfP",
-        },
-        .Windows = .{
-            .url = "git+https://github.com/Mauhlt/Windows.git#05cf23872ad4ffdebad2b1eebc3c75c876384ad9",
-            .hash = "Windows-0.0.0-F1HWOSU4AAAKZvjfdzk0xRYoJvRzXW52rjkR1aHNTeqL",
-        },
+        .Image = .{ .path = "../Image" },
+        .Vulkan = .{ .path = "../Vulkan" },
+        .Windows = .{ .path = "../Windows" },
     },
     .paths = .{
         "build.zig",
