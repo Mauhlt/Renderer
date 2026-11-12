@@ -30,6 +30,32 @@ without changing how the existing demo works.
   `.zig`, so the existing GLSL shader loop in build.zig ignores them.
 * `src/root.zig` (was empty): module root, exports `Instanced2D` and `vk`.
 
+* `src/Font/` (module **`Font`**): text, for anything that uses fonts,
+  with no Vulkan, window-system or libc dependency (only std), so it builds
+  for wasm32-freestanding as well as native targets. Moved here from
+  Portal, where two copies lived (the native client's `client/src/view/font`
+  and the browser client's `src/wasm/font`) plus two copies of the width
+  table (`src/vt_width.zig`, `client/src/view/wcwidth.zig`).
+  * `ttf.zig`: TrueType (glyf) parser, .ttc collections. Font files are
+    untrusted: bounds-checked reads, overflow-checked offsets, capped
+    recursion/points. Fixed while moving: a cmap format-12 group whose
+    startGlyphID is near 2^32 overflowed a `u32` add (a panic in safe
+    builds); it now maps to .notdef (new test).
+  * `raster.zig`: exact-area scanline rasteriser for quadratic outlines.
+  * `wcwidth.zig`: terminal cell width (0/1/2) of a code point.
+  * `fontset.zig`: system monospace font (+ bold) and lazily loaded
+    fallbacks, cell-sized coverage bitmaps, procedural box drawing and
+    replacement box. Reads OS font files through `std.Io` (native only; the
+    browser client uses `ttf` + `raster` directly with bundled fonts).
+  * `atlas.zig`: CPU-side RGBA8 glyph atlas (shelf packer, glyph cache,
+    dirty rectangle to upload with `Instanced2D.updateTexture`).
+  * `root.zig`: module root. `wasm_check.zig`: compile check for wasm32.
+  * `testdata/DejaVuSansMono.ttf` (+ `LICENSE.txt`, `README.md`): the tests'
+    font, embedded with `@embedFile`, so they no longer depend on
+    `C:\Windows\Fonts\consola.ttf`. (`fontset`/`atlas` tests still use
+    system fonts and skip when there are none.)
+* `.gitignore`: `zig-pkg/` (the package cache the 0.18 build creates), `.zig-cache/`, `zig-out/`.
+
 ## build.zig / build.zig.zon
 
 * New public module **`Renderer`** (`b.addModule("Renderer", ...)`, root
@@ -37,6 +63,13 @@ without changing how the existing demo works.
   through, and the two Zig shaders compiled by `addZigShader` and embedded
   with `@embedFile`.
 * New step `zig build test-lib` (tests the module).
+* New public module **`Font`** (`b.addModule("Font", ...)`, root
+  `src/Font/root.zig`, no imports). The `Renderer` module also imports it
+  and re-exports it as `Renderer.Font`; packages that need only text import
+  `Font` directly (Portal's wasm browser client and its server's width
+  table do), which never compiles the Vulkan bindings.
+* New step `zig build test-font`: Font unit tests plus a wasm32-freestanding
+  compile check; `test-lib` now also runs it.
 * New option `-Ddemo=<bool>` (default **true**, i.e. unchanged behaviour).
   Packages that only want the library pass `.demo = false` so the demo's
   dependencies (Image, Windows, glslc in `Vulkan/Bin`) are never needed.
@@ -55,7 +88,7 @@ and all other existing files are untouched.
 
 ## Verified
 
-* `zig build test-lib -Ddemo=false` passes; the module is compiled for
+* `zig build test-lib -Ddemo=false` passes (incl. `test-font`, 12 tests); the module is compiled for
   x86_64-windows, x86_64-linux-gnu and aarch64-macos by the client's builds.
 * Running on Windows (NVIDIA, Vulkan 1.4 loader) through portal-client:
   glyph atlas uploads, thousands of instances per frame, live window resize.

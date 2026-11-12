@@ -5,8 +5,31 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // Reusable library module "Renderer" (src/root.zig): Instanced2D plus a
-    // re-export of the Vulkan bindings. Needs only the Vulkan package, works
+    // Module "Font" (src/Font/root.zig): TrueType parser, rasteriser, cell
+    // width table, system font set and glyph atlas. Only std, no Vulkan or
+    // OS bindings, so it also builds for wasm32-freestanding; packages that
+    // only need text (a browser client, a terminal emulator's width table)
+    // import it on its own and never compile the Vulkan bindings.
+    const font_mod = b.addModule("Font", .{
+        .root_source_file = b.path("src/Font/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const font_tests = b.addTest(.{ .root_module = font_mod });
+    const font_step = b.step("test-font", "Test the Font module and compile it for wasm32-freestanding");
+    font_step.dependOn(&b.addRunArtifact(font_tests).step);
+    const font_wasm = b.addObject(.{
+        .name = "font-wasm-check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/Font/wasm_check.zig"),
+            .target = b.resolveTargetQuery(.{ .cpu_arch = .wasm32, .os_tag = .freestanding }),
+            .optimize = .ReleaseSmall,
+        }),
+    });
+    font_step.dependOn(&font_wasm.step);
+
+    // Reusable library module "Renderer" (src/root.zig): Instanced2D plus
+    // re-exports of the Vulkan bindings and the Font module. Needs only the Vulkan package, works
     // for any target, and uses shaders written in Zig (src/Shaders/*.zig)
     // compiled to SPIR-V by the Zig compiler, so no glslc is required.
     const vulkan_lib = b.dependency("Vulkan", .{ .target = target, .optimize = optimize }).module("Vulkan");
@@ -14,12 +37,17 @@ pub fn build(b: *std.Build) !void {
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{.{ .name = "Vulkan", .module = vulkan_lib }},
+        .imports = &.{
+            .{ .name = "Vulkan", .module = vulkan_lib },
+            .{ .name = "Font", .module = font_mod },
+        },
     });
     addZigShader(b, lib_mod, "instanced2d_vert.spv", "src/Shaders/instanced2d_vert.zig");
     addZigShader(b, lib_mod, "instanced2d_frag.spv", "src/Shaders/instanced2d_frag.zig");
     const lib_tests = b.addTest(.{ .root_module = lib_mod });
-    b.step("test-lib", "Test the Renderer library module").dependOn(&b.addRunArtifact(lib_tests).step);
+    const lib_step = b.step("test-lib", "Test the Renderer library module (and the Font module)");
+    lib_step.dependOn(&b.addRunArtifact(lib_tests).step);
+    lib_step.dependOn(font_step);
 
     // The original demo executable (Windows only). Packages that only want
     // the library pass `.demo = false` so the demo's extra dependencies
