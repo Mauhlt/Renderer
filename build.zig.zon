@@ -4,7 +4,7 @@
     .fingerprint = 0x8efc3ca5a6851ba,
     .minimum_zig_version = "0.16.0-dev.2676+4e2cec265",
     .dependencies = .{
-        .Image = .{ .path = "../Image" },
+        .Image = .{ .path = "../Image", .lazy = true },
         .Vulkan = .{ .path = "../Vulkan" },
         .Windows = .{ .path = "../Windows" },
     },

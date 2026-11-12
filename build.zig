@@ -3,11 +3,36 @@ const std = @import("std");
 pub fn build(b: *std.Build) !void {
     // set cwd
     const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    // Reusable library module "Renderer" (src/root.zig): Instanced2D plus a
+    // re-export of the Vulkan bindings. Needs only the Vulkan package, works
+    // for any target, and uses shaders written in Zig (src/Shaders/*.zig)
+    // compiled to SPIR-V by the Zig compiler, so no glslc is required.
+    const vulkan_lib = b.dependency("Vulkan", .{ .target = target, .optimize = optimize }).module("Vulkan");
+    const lib_mod = b.addModule("Renderer", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "Vulkan", .module = vulkan_lib }},
+    });
+    addZigShader(b, lib_mod, "instanced2d_vert.spv", "src/Shaders/instanced2d_vert.zig");
+    addZigShader(b, lib_mod, "instanced2d_frag.spv", "src/Shaders/instanced2d_frag.zig");
+    const lib_tests = b.addTest(.{ .root_module = lib_mod });
+    b.step("test-lib", "Test the Renderer library module").dependOn(&b.addRunArtifact(lib_tests).step);
+
+    // The original demo executable (Windows only). Packages that only want
+    // the library pass `.demo = false` so the demo's extra dependencies
+    // (Image, Windows, glslc) are never needed.
+    const demo = b.option(bool, "demo", "Build the Renderer demo executable (default true)") orelse true;
+    if (!demo) return;
     switch (target.result.os.tag) {
         .windows => {},
-        inline else => |tag| std.log.err("Unsupported OS: {t}", .{tag}),
+        inline else => |tag| {
+            std.log.err("Unsupported OS for the demo: {t}", .{tag});
+            return;
+        },
     }
-    const optimize = b.standardOptimizeOption(.{});
     const exe = b.addExecutable(.{
         .name = "Renderer",
         .root_module = b.createModule(.{
@@ -38,7 +63,10 @@ pub fn build(b: *std.Build) !void {
     // Libraries
     const windows_mod = addLibrary(b, "Windows");
     const vulkan_mod = addLibraryWithCommonModules(b, "Vulkan", &.{windows_mod});
-    const image_mod = addLibraryWithCommonModules(b, "Image", &.{ windows_mod, vulkan_mod });
+    const image_package = b.lazyDependency("Image", .{}) orelse return;
+    const image_mod: Module = .{ .name = "Image", .mod = image_package.module("Image") };
+    image_mod.mod.addImport(windows_mod.name, windows_mod.mod);
+    image_mod.mod.addImport(vulkan_mod.name, vulkan_mod.mod);
     exe.root_module.addImport(windows_mod.name, windows_mod.mod);
     exe.root_module.addImport(vulkan_mod.name, vulkan_mod.mod);
     exe.root_module.addImport(image_mod.name, image_mod.mod);
@@ -122,6 +150,21 @@ pub fn build(b: *std.Build) !void {
 //   const vert = try loadShader(init.io, init.gpa, exe_dir, "mesh.vert.spv");
 //   const frag = try loadShader(init.io, init.gpa, exe_dir, "mesh.frag.spv");
 // }
+
+/// Compiles a Zig shader to SPIR-V with the self-hosted backend and makes the
+/// binary available to `mod` as `@embedFile(name)`.
+fn addZigShader(b: *std.Build, mod: *std.Build.Module, name: []const u8, src: []const u8) void {
+    const obj = b.addObject(.{
+        .name = name,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(src),
+            .target = b.resolveTargetQuery(.{ .cpu_arch = .spirv32, .os_tag = .vulkan, .ofmt = .spirv }),
+            .optimize = .ReleaseFast,
+        }),
+        .use_llvm = false,
+    });
+    mod.addAnonymousImport(name, .{ .root_source_file = obj.getEmittedBin() });
+}
 
 fn isShaderFile(name: []const u8) bool {
     for ([_][]const u8{ "vert", "frag" }) |ext| {
