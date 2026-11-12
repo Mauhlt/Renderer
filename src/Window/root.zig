@@ -194,6 +194,9 @@ pub const TextField = struct {
     font_px: f32 = 0,
     fg: [3]u8 = .{ 0xE6, 0xE9, 0xED },
     bg: [3]u8 = .{ 0x31, 0x36, 0x3F },
+    /// Raise the keyboard now (the UI moved its focus here). Otherwise the
+    /// keyboard comes up when the user taps the field.
+    focus: bool = false,
 };
 
 /// Platform behaviour for `runApp`. Only iOS acts on these today; every

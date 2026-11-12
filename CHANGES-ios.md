@@ -78,7 +78,7 @@ loop for every platform.
   cover after a background trip until the app calls `ios.unlock()`.
 * iOS extras for the app's own iOS section (not in the interface):
   `Window.ios.rootView()`, `uiWindow()`, `lock()`, `unlock()`,
-  `isLocked()`, `postEvent()`, and `ios.objc` (runtime helpers, global
+  `isLocked()`, `setUnlockHandler()` (called when the app becomes active while locked, and on a tap on the cover), `postEvent()`, and `ios.objc` (runtime helpers, global
   blocks for completion handlers, main-queue dispatch).
 * Fonts (src/Font/fontset.zig): iOS system font paths
   (`/System/Library/Fonts/CoreUI/Menlo.ttc`, ...), unverified on a device.
@@ -98,7 +98,10 @@ found by the Vulkan package's loader (branch `moltenvk`: the app bundle's
   the iOS SDK (libSystem, libobjc, UIKit/QuartzCore/Foundation), which only
   a Mac has. The UIKit/libobjc/libdispatch symbols are `extern`s that
   resolve when the app links on the Mac.
-* `addWindowImports`: iOS imports ../MacOS too (types only).
+* Module **"IosObjC"** (src/Window/ios_objc.zig): the iOS runtime layer on
+  its own, for iOS code without a window (Portal's packet tunnel
+  extension); the Window module imports the same instance on iOS. It uses
+  ../MacOS for the Objective-C types.
 
 ## Zig std on iOS (0.18.0-dev.4)
 

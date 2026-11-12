@@ -59,7 +59,17 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
-    addWindowImports(b, window_mod, target, optimize, lib_mod);
+    // "IosObjC": the iOS backend's runtime layer on its own (the Window
+    // module imports this same instance, so an app may use both). Only
+    // compiled when an iOS build imports it.
+    const ios_objc_mod = b.addModule("IosObjC", .{
+        .root_source_file = b.path("src/Window/ios_objc.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    if (target.result.os.tag == .ios) ios_objc_mod.addImport("MacOS", b.dependency("MacOS", .{ .target = target, .optimize = optimize }).module("MacOS"));
+    addWindowImports(b, window_mod, target, optimize, lib_mod, ios_objc_mod);
     const window_tests = b.addTest(.{ .root_module = window_mod });
     const window_step = b.step("test-window", "Test the Window module and compile it for Windows, Linux (Wayland) and macOS");
     window_step.dependOn(&b.addRunArtifact(window_tests).step);
@@ -263,16 +273,32 @@ fn addWindowImports(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     renderer: *std.Build.Module,
+    ios_objc: ?*std.Build.Module,
 ) void {
     mod.addImport("Renderer", renderer);
     switch (target.result.os.tag) {
         .windows => mod.addImport("Windows", b.dependency("Windows", .{ .target = target, .optimize = optimize }).module("Windows")),
         // iOS reuses the Objective-C runtime types from ../MacOS (ios_objc.zig).
-        .macos, .ios => mod.addImport("MacOS", b.dependency("MacOS", .{ .target = target, .optimize = optimize }).module("MacOS")),
+        .macos => mod.addImport("MacOS", b.dependency("MacOS", .{ .target = target, .optimize = optimize }).module("MacOS")),
+        .ios => mod.addImport("IosObjC", ios_objc orelse iosObjcModule(b, target, optimize)),
         else => mod.addImport("Wayland", b.dependency("Wayland", .{ .target = target, .optimize = optimize }).module("Wayland")),
     }
     // dlopen (Wayland, Vulkan loader, Objective-C runtime) needs libc off Windows.
     if (target.result.os.tag != .windows) mod.link_libc = true;
+}
+
+/// Module "IosObjC" (src/Window/ios_objc.zig): the iOS backend's
+/// Objective-C runtime layer (libobjc externs, msgSend, runtime classes,
+/// global blocks, main-queue dispatch) on ../MacOS's types. Exposed on its
+/// own for iOS code that needs no window (an app extension).
+fn iosObjcModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = b.path("src/Window/ios_objc.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{.{ .name = "MacOS", .module = b.dependency("MacOS", .{ .target = target, .optimize = optimize }).module("MacOS") }},
+    });
 }
 
 /// A Renderer + Window module pair for `t`, for compile-only checks.
@@ -291,7 +317,7 @@ fn windowCheckModule(b: *std.Build, t: std.Build.ResolvedTarget) *std.Build.Modu
     addZigShader(b, renderer, "instanced2d_vert.spv", "src/Shaders/instanced2d_vert.zig");
     addZigShader(b, renderer, "instanced2d_frag.spv", "src/Shaders/instanced2d_frag.zig");
     const window = b.createModule(.{ .root_source_file = b.path("src/Window/root.zig"), .target = t, .optimize = .Debug });
-    addWindowImports(b, window, t, .Debug, renderer);
+    addWindowImports(b, window, t, .Debug, renderer, null);
     return window;
 }
 

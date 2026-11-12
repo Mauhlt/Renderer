@@ -213,6 +213,7 @@ extern "c" var _dispatch_main_q: u8;
 extern "c" fn dispatch_async_f(queue: *anyopaque, ctx: ?*anyopaque, work: DispatchFn) void;
 extern "c" fn dispatch_sync_f(queue: *anyopaque, ctx: ?*anyopaque, work: DispatchFn) void;
 extern "c" fn pthread_main_np() c_int;
+extern "c" fn dispatch_get_global_queue(identifier: isize, flags: usize) ?*anyopaque;
 
 pub fn isMainThread() bool {
     return pthread_main_np() != 0;
@@ -221,6 +222,18 @@ pub fn isMainThread() bool {
 /// Runs `work(ctx)` on the main thread later (any thread).
 pub fn onMainAsync(ctx: ?*anyopaque, work: DispatchFn) void {
     dispatch_async_f(@ptrCast(&_dispatch_main_q), ctx, work);
+}
+
+/// The main dispatch queue (e.g. for delegate callbacks).
+pub fn mainQueue() *anyopaque {
+    return @ptrCast(&_dispatch_main_q);
+}
+
+/// Runs `work(ctx)` on a background queue (blocking work such as starting
+/// a camera session).
+pub fn onBackgroundAsync(ctx: ?*anyopaque, work: DispatchFn) void {
+    const q = dispatch_get_global_queue(0, 0) orelse return work(ctx);
+    dispatch_async_f(q, ctx, work);
 }
 
 /// Runs `work(ctx)` on the main thread and waits (inline when already on

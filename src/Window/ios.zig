@@ -50,7 +50,7 @@
 
 const std = @import("std");
 const root = @import("root.zig");
-pub const objc = @import("ios_objc.zig");
+pub const objc = @import("IosObjC");
 
 const Object = objc.Object;
 const Class = objc.Class;
@@ -141,6 +141,10 @@ const State = struct {
     ui_posted: std.atomic.Value(bool) = .init(false),
 
     window_handle: Window = .{},
+    /// Main thread: the app's handler for "the lock wants lifting" (e.g.
+    /// ask for Face ID): called when the app becomes active while locked
+    /// and when the cover is tapped.
+    unlock_request: ?*const fn () void = null,
 
     fn lock(s: *State) void {
         _ = std.c.pthread_mutex_lock(&s.mutex);
@@ -398,7 +402,6 @@ pub fn unlock() void {
         fn f(_: ?*anyopaque) callconv(.c) void {
             state.locked = false;
             updateCover();
-            applyUi(null);
         }
     }.f);
 }
@@ -417,6 +420,15 @@ pub fn lock() void {
 /// Main thread: true while the lock cover is up.
 pub fn isLocked() bool {
     return state.locked;
+}
+
+/// Sets what lifts the lock (`lock_after_background`, `lock()`): called on
+/// the main thread whenever the app becomes active while locked and when
+/// the cover is tapped (e.g. to ask for Face ID again after a cancel). The
+/// handler calls `unlock()` once the user is authenticated. Set it before
+/// runApp.
+pub fn setUnlockHandler(f: ?*const fn () void) void {
+    state.unlock_request = f;
 }
 
 /// Any thread: queue an event for the app thread (e.g. a scanned QR code
@@ -468,7 +480,7 @@ fn applyUi(_: ?*anyopaque) callconv(.c) void {
         msgSend(void, tv, sel("setText:"), .{str});
     }
     msgSend(void, tv, sel("setHidden:"), .{objc.NO});
-    if (!state.locked and !state.inactive) _ = msgSend(BOOL, tv, sel("becomeFirstResponder"), .{});
+    if (field.focus and !state.locked and !state.inactive) _ = msgSend(BOOL, tv, sel("becomeFirstResponder"), .{});
 }
 
 fn makeTextView(view: *Object) ?*Object {
@@ -496,6 +508,12 @@ fn makeCover(window: *Object) void {
     // UIViewAutoresizingFlexibleWidth | FlexibleHeight.
     msgSend(void, v, sel("setAutoresizingMask:"), .{@as(objc.NSUInteger, 2 | 16)});
     msgSend(void, v, sel("setHidden:"), .{objc.YES});
+    // Taps on the cover go to the app's handler (setCoverTapHandler).
+    if (msgSend(?*Object, objc.getClass("UITapGestureRecognizer"), sel("alloc"), .{})) |ga| {
+        const target = msgSend(?*Object, sceneDelegateClass(), sel("new"), .{});
+        if (msgSend(?*Object, ga, sel("initWithTarget:action:"), .{ target, sel("coverTapped:") })) |g|
+            msgSend(void, v, sel("addGestureRecognizer:"), .{g});
+    }
     msgSend(void, window, sel("addSubview:"), .{v});
     state.cover = v;
 }
@@ -655,7 +673,7 @@ const SceneDelegate = struct {
     fn didBecomeActive(_: *Object, _: *Selector, _: ?*Object) callconv(.c) void {
         state.inactive = false;
         updateCover();
-        applyUi(null);
+        if (state.locked) if (state.unlock_request) |f| f();
     }
     fn willResignActive(_: *Object, _: *Selector, _: ?*Object) callconv(.c) void {
         state.inactive = true;
@@ -697,6 +715,10 @@ const SceneDelegate = struct {
         state.unlock();
     }
 
+    fn coverTapped(_: *Object, _: *Selector, _: ?*Object) callconv(.c) void {
+        if (state.locked) if (state.unlock_request) |f| f();
+    }
+
     fn capturedDidChange(_: *Object, _: *Selector, _: ?*Object) callconv(.c) void {
         if (mainScreen()) |scr| state.captured = msgSend(BOOL, scr, sel("isCaptured"), .{}) != 0;
         updateCover();
@@ -716,6 +738,7 @@ fn sceneDelegateClass() *Class {
     b.addMethod("sceneWillEnterForeground:", &SceneDelegate.willEnterForeground, "v@:@");
     b.addMethod("keyboardWillChange:", &SceneDelegate.keyboardWillChange, "v@:@");
     b.addMethod("capturedDidChange:", &SceneDelegate.capturedDidChange, "v@:@");
+    b.addMethod("coverTapped:", &SceneDelegate.coverTapped, "v@:@");
     return b.register();
 }
 
@@ -855,5 +878,6 @@ comptime {
     _ = &lock;
     _ = &isLocked;
     _ = &postEvent;
+    _ = &setUnlockHandler;
     _ = &runApp;
 }
