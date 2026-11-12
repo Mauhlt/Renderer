@@ -393,6 +393,34 @@ pub const Window = struct {
         _ = msgSend(TY.NSInteger, pb, sel("clearContents"), .{});
         return msgSend(OBJC.BOOL, pb, sel("setString:forType:"), .{ ns, t }) != 0;
     }
+
+    // ------------------------------------------- touch-device extras (none)
+
+    pub fn insets(self: *const Window) root.Insets {
+        _ = self;
+        return .{};
+    }
+
+    /// No native text field here: keys and text arrive as events.
+    pub fn showTextInput(self: *Window, field: root.TextField) bool {
+        _ = self;
+        _ = field;
+        return false;
+    }
+
+    pub fn hideTextInput(self: *Window) void {
+        _ = self;
+    }
+
+    pub fn textInputText(self: *Window, buf: []u8) []const u8 {
+        _ = self;
+        return buf[0..0];
+    }
+
+    pub fn setTextInputText(self: *Window, utf8: []const u8) void {
+        _ = self;
+        _ = utf8;
+    }
 };
 
 fn modsOf(ev: *APPKIT.Event) Mods {

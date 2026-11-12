@@ -37,9 +37,30 @@
 //!                                   units, invalid sequences -> U+FFFD;
 //!                                   caller frees
 //!   setClipboardText(utf8) bool
+//!   insets() Insets                 pixels at the edges the UI must keep
+//!                                   clear: safe area (notch, home
+//!                                   indicator) and the on-screen keyboard;
+//!                                   all zero on desktops
+//!   showTextInput(TextField) bool   place the OS's own text field over the
+//!                                   UI's input slot (iOS: a UITextView, so
+//!                                   the keyboard, autocorrect and dictation
+//!                                   work); false where keys and text arrive
+//!                                   as .key / .char events instead
+//!   hideTextInput()
+//!   textInputText(buf) []const u8   the native field's current text (UTF-8)
+//!   setTextInputText(utf8)          replace it (e.g. clear after a send)
+//!
+//! Module-level: `runApp(options, entry, ctx)` runs the app's main loop.
+//! Desktop backends call `entry` on the calling thread. On iOS
+//! UIApplicationMain takes over the main thread and never returns, so
+//! `entry` runs on an app thread started once the scene's window exists;
+//! the same `while (pollEvent) ... waitEvents` loop runs there unchanged
+//! (see ios.zig, "Inverted control"). Events only some platforms produce:
+//! `.insets`, `.background` / `.foreground`, `.text_input`.
 //!
 //! Backends: Win32 (../Windows bindings), Wayland (../Wayland; no X11),
-//! macOS AppKit (../MacOS).
+//! macOS AppKit (../MacOS), iOS UIKit (ios.zig; Objective-C runtime types
+//! from ../MacOS).
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -52,8 +73,12 @@ pub const Window = switch (builtin.os.tag) {
     .windows => @import("win32.zig").Window,
     .linux => @import("wayland.zig").Window,
     .macos => @import("cocoa.zig").Window,
+    .ios => @import("ios.zig").Window,
     else => @compileError("Window: unsupported OS"),
 };
+
+/// The iOS backend's extras (lock cover, native view handle); void elsewhere.
+pub const ios = if (builtin.os.tag == .ios) @import("ios.zig") else void;
 
 comptime {
     checkInterface(Window);
@@ -129,7 +154,80 @@ pub const Event = union(enum) {
     scroll: struct { x: f32, y: f32, dx: f32, dy: f32, mods: Mods = .{} },
     /// Ctrl(+Cmd on macOS) with = / - / 0.
     zoom: enum { in, out, reset },
+    /// `insets()` changed (rotation, keyboard shown / hidden). Redraw.
+    insets,
+    /// The app left the screen (iOS: the scene entered the background).
+    /// Stop drawing until `.foreground`: the backend waits (briefly) until
+    /// this event has been taken, so no frame is in flight afterwards.
+    background,
+    /// Back on screen after `.background`. Redraw.
+    foreground,
+    /// The native text field (showTextInput) changed or was submitted
+    /// (Return). Read it with textInputText.
+    text_input: enum { changed, submit },
 };
+
+/// Pixels (framebuffer) at each edge that the UI should keep clear.
+/// `keyboard` is the height covered by the on-screen keyboard, measured
+/// from the bottom edge (0 when hidden); it includes the bottom safe area
+/// while shown.
+pub const Insets = struct {
+    top: f32 = 0,
+    left: f32 = 0,
+    bottom: f32 = 0,
+    right: f32 = 0,
+    keyboard: f32 = 0,
+
+    /// The bottom inset to lay out against: keyboard or safe area.
+    pub fn bottomClear(i: Insets) f32 {
+        return @max(i.bottom, i.keyboard);
+    }
+};
+
+/// Where and how to show the native text field (framebuffer pixels).
+pub const TextField = struct {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    /// Font size in pixels; 0 = the platform's default.
+    font_px: f32 = 0,
+    fg: [3]u8 = .{ 0xE6, 0xE9, 0xED },
+    bg: [3]u8 = .{ 0x31, 0x36, 0x3F },
+};
+
+/// Platform behaviour for `runApp`. Only iOS acts on these today; every
+/// field defaults to off so a desktop program is unaffected.
+pub const AppOptions = struct {
+    /// iOS: refuse third-party (custom) keyboards for the whole app
+    /// (application:shouldAllowExtensionPointIdentifier: says NO for
+    /// UIApplicationKeyboardExtensionPointIdentifier).
+    block_keyboard_extensions: bool = false,
+    /// iOS: cover the UI with an opaque view while the app is not active
+    /// (app switcher snapshot, Control Center, calls).
+    cover_when_inactive: bool = false,
+    /// iOS: cover the UI while the screen is recorded or mirrored
+    /// (UIScreen.isCaptured, UIScreenCapturedDidChangeNotification).
+    cover_when_captured: bool = false,
+    /// iOS: after a trip to the background keep the cover up ("locked")
+    /// until the app calls `ios.unlock()` (e.g. after Face ID).
+    lock_after_background: bool = false,
+    /// Cover colour.
+    cover_rgb: [3]u8 = .{ 0x20, 0x23, 0x29 },
+};
+
+pub const EntryFn = *const fn (ctx: ?*anyopaque) void;
+
+/// Runs `entry(ctx)` as the program's main loop and exits the process
+/// when it returns (status 0). Desktop: on this thread, now. iOS: call it
+/// from `main` on the main thread; it starts UIKit (UIApplicationMain,
+/// never returns) and runs `entry` on an app thread once the window
+/// exists. Window.init must be called from inside `entry`.
+pub fn runApp(options: AppOptions, entry: EntryFn, ctx: ?*anyopaque) noreturn {
+    if (builtin.os.tag == .ios) @import("ios.zig").runApp(options, entry, ctx);
+    entry(ctx);
+    std.process.exit(0);
+}
 
 /// Fixed-size event queue shared by the backends. Other events are dropped
 /// on overflow, but `.close` never is: it is kept as a sticky flag and
@@ -190,6 +288,11 @@ pub fn checkInterface(comptime W: type) void {
         hide: *const fn (*W) void,
         clipboardText: *const fn (*W, A, usize) ?[]u8,
         setClipboardText: *const fn (*W, []const u8) bool,
+        insets: *const fn (*const W) Insets,
+        showTextInput: *const fn (*W, TextField) bool,
+        hideTextInput: *const fn (*W) void,
+        textInputText: *const fn (*W, []u8) []const u8,
+        setTextInputText: *const fn (*W, []const u8) void,
     };
     inline for (@typeInfo(Sigs).@"struct".field_names, @typeInfo(Sigs).@"struct".field_types) |name, F| {
         if (!@hasDecl(W, name)) @compileError(@typeName(W) ++ " lacks Window." ++ name);
@@ -270,8 +373,30 @@ pub fn titleZ(text: []const u8, buf: []u8) [:0]const u8 {
     return buf[0..n :0];
 }
 
+/// Length of the longest prefix of `s` that does not split a UTF-8 code
+/// point (for fixed-size text buffers).
+pub fn utf8Prefix(s: []const u8) usize {
+    var n = s.len;
+    while (n > 0 and (s[n - 1] & 0xC0) == 0x80) n -= 1;
+    if (n == 0) return 0;
+    const need = std.unicode.utf8ByteSequenceLength(s[n - 1]) catch return n - 1;
+    return if (n - 1 + need <= s.len) n - 1 + need else n - 1;
+}
+
+comptime {
+    _ = &runApp;
+}
+
 test {
     if (builtin.os.tag == .windows) _ = @import("win32.zig");
+}
+
+test "utf8Prefix never splits a code point" {
+    try std.testing.expectEqual(@as(usize, 3), utf8Prefix("abc"));
+    try std.testing.expectEqual(@as(usize, 1), utf8Prefix("a\xc3"));
+    try std.testing.expectEqual(@as(usize, 3), utf8Prefix("a\xc3\xa9"));
+    try std.testing.expectEqual(@as(usize, 1), utf8Prefix("a\xe2\x82"));
+    try std.testing.expectEqual(@as(usize, 0), utf8Prefix("\xa9"));
 }
 
 test "Queue never drops close" {

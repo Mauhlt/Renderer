@@ -19,6 +19,16 @@ const FontRef = struct { path: []const u8, index: u32 = 0 };
 const primary_paths: []const FontRef = switch (builtin.os.tag) {
     .windows => &.{ .{ .path = "C:\\Windows\\Fonts\\consola.ttf" }, .{ .path = "C:\\Windows\\Fonts\\cour.ttf" } },
     .macos => &.{ .{ .path = "/System/Library/Fonts/Menlo.ttc", .index = 0 }, .{ .path = "/System/Library/Fonts/Monaco.ttf" } },
+    // iOS keeps its system fonts in subfolders (readable from the app
+    // sandbox). UNVERIFIED on a device: the first that opens wins.
+    .ios => &.{
+        .{ .path = "/System/Library/Fonts/CoreUI/Menlo.ttc", .index = 0 },
+        .{ .path = "/System/Library/Fonts/Core/Menlo.ttc", .index = 0 },
+        .{ .path = "/System/Library/Fonts/CoreAddition/Menlo.ttc", .index = 0 },
+        .{ .path = "/System/Library/Fonts/Menlo.ttc", .index = 0 },
+        .{ .path = "/System/Library/Fonts/Core/Courier.ttc", .index = 0 },
+        .{ .path = "/System/Library/Fonts/CoreAddition/Courier New.ttf" },
+    },
     else => &.{
         .{ .path = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf" },
         .{ .path = "/usr/share/fonts/TTF/DejaVuSansMono.ttf" },
@@ -33,6 +43,11 @@ const primary_paths: []const FontRef = switch (builtin.os.tag) {
 const bold_paths: []const FontRef = switch (builtin.os.tag) {
     .windows => &.{ .{ .path = "C:\\Windows\\Fonts\\consolab.ttf" }, .{ .path = "C:\\Windows\\Fonts\\courbd.ttf" } },
     .macos => &.{.{ .path = "/System/Library/Fonts/Menlo.ttc", .index = 1 }},
+    .ios => &.{
+        .{ .path = "/System/Library/Fonts/CoreUI/Menlo.ttc", .index = 1 },
+        .{ .path = "/System/Library/Fonts/Core/Menlo.ttc", .index = 1 },
+        .{ .path = "/System/Library/Fonts/CoreAddition/Menlo.ttc", .index = 1 },
+    },
     else => &.{
         .{ .path = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf" },
         .{ .path = "/usr/share/fonts/TTF/DejaVuSansMono-Bold.ttf" },
@@ -49,6 +64,12 @@ const fallback_paths: []const FontRef = switch (builtin.os.tag) {
         .{ .path = "C:\\Windows\\Fonts\\simsun.ttc" },
         .{ .path = "C:\\Windows\\Fonts\\seguiemj.ttf" },
         .{ .path = "C:\\Windows\\Fonts\\arial.ttf" },
+    },
+    .ios => &.{
+        .{ .path = "/System/Library/Fonts/Core/Apple Symbols.ttf" },
+        .{ .path = "/System/Library/Fonts/CoreAddition/Arial Unicode.ttf" },
+        .{ .path = "/System/Library/Fonts/LanguageSupport/PingFang.ttc" },
+        .{ .path = "/System/Library/Fonts/Core/Helvetica.ttc" },
     },
     .macos => &.{
         .{ .path = "/System/Library/Fonts/Supplemental/Arial Unicode.ttf" },

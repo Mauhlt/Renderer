@@ -393,6 +393,34 @@ pub const Window = struct {
         return true;
     }
 
+    // ------------------------------------------- touch-device extras (none)
+
+    pub fn insets(self: *const Window) root.Insets {
+        _ = self;
+        return .{};
+    }
+
+    /// No native text field here: keys and text arrive as events.
+    pub fn showTextInput(self: *Window, field: root.TextField) bool {
+        _ = self;
+        _ = field;
+        return false;
+    }
+
+    pub fn hideTextInput(self: *Window) void {
+        _ = self;
+    }
+
+    pub fn textInputText(self: *Window, buf: []u8) []const u8 {
+        _ = self;
+        return buf[0..0];
+    }
+
+    pub fn setTextInputText(self: *Window, utf8: []const u8) void {
+        _ = self;
+        _ = utf8;
+    }
+
     /// Clipboard text as UTF-8 (unpaired surrogates become U+FFFD), at most
     /// `max_units` UTF-16 units. Caller frees. Null if there is none.
     pub fn clipboardText(self: *Window, gpa: std.mem.Allocator, max_units: usize) ?[]u8 {

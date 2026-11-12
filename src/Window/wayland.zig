@@ -802,6 +802,34 @@ pub const Window = struct {
         return true;
     }
 
+    // ------------------------------------------- touch-device extras (none)
+
+    pub fn insets(self: *const Window) root.Insets {
+        _ = self;
+        return .{};
+    }
+
+    /// No native text field here: keys and text arrive as events.
+    pub fn showTextInput(self: *Window, field: root.TextField) bool {
+        _ = self;
+        _ = field;
+        return false;
+    }
+
+    pub fn hideTextInput(self: *Window) void {
+        _ = self;
+    }
+
+    pub fn textInputText(self: *Window, buf: []u8) []const u8 {
+        _ = self;
+        return buf[0..0];
+    }
+
+    pub fn setTextInputText(self: *Window, utf8: []const u8) void {
+        _ = self;
+        _ = utf8;
+    }
+
     fn onDataSource(source: *data.DataSource, ev: data.DataSource.Event, self: *Window) void {
         switch (ev) {
             .send => |s| {
