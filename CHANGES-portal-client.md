@@ -94,3 +94,129 @@ and all other existing files are untouched.
   glyph atlas uploads, thousands of instances per frame, live window resize.
 * The demo build was not run in this worktree (it needs `../Image` and
   `Vulkan/Bin/glslc.exe`, which only exist next to the main checkout).
+
+## Module `Window` (src/Window): native windows on Win32, Wayland and macOS
+
+Owner decision: Portal has no window code of its own; windowing lives here,
+on the owner's binding repos. Chain: Portal -> Renderer (`Window` +
+`Instanced2D`) -> Vulkan + Windows / Wayland / MacOS.
+
+* `src/Window/root.zig` (public module **`Window`**): the interface, the
+  shared event types (`Event`, `Key`, `Mods`, `MouseButton`), the `Queue`
+  (never drops `.close`), `LiveFn`, `forever`, `SurfaceSource` (=
+  `Instanced2D.SurfaceSource`), and helpers (`sanitizeClipboard`,
+  `titleZ`). `Window.Window` is the platform's backend. API:
+
+  | call | meaning |
+  |------|---------|
+  | `init(gpa, title, w, h) !*Window` | logical size, scaled by DPI |
+  | `deinit()` | |
+  | `setLiveCallback(ctx, fn)` | redraw hook while the OS runs a modal resize loop (Win32 border drag, macOS live resize) |
+  | `pollEvent() ?Event` | non-blocking, pumps the OS queue |
+  | `pollQueued() ?Event` | queued events only (safe inside the live callback) |
+  | `waitEvents(timeout_ms)` | blocks until input, `wake()` or the timeout; `forever` = none |
+  | `wake()` | any thread, coalesced |
+  | `framebufferSize() [2]u32`, `scale() f32` | pixels; 1.0 = 96 dpi / 1x |
+  | `surfaceSource()` | for `Instanced2D.init` |
+  | `setTitle(utf8)`, `hide()` | |
+  | `clipboardText(gpa, max_units) ?[]u8`, `setClipboardText(utf8) bool` | UTF-8; at most `max_units` UTF-16 units; invalid -> U+FFFD |
+
+  Events: `close`, `resize` (px), `scale`, `expose`, `key` (named keys +
+  mods), `char` (text; Ctrl+letter = lowercase letter with `mods.ctrl`,
+  Alt+char with `mods.alt`), `mouse_down` (left/right/middle + mods),
+  `mouse_move` (left drags only), `mouse_up` (left), `scroll` (new: notches,
+  `dy` > 0 = away from the user), `zoom` (Ctrl + = / - / 0). Same semantics
+  as Portal's former platform layer.
+* `checkInterface(W)` runs at compile time for the selected backend: every
+  method must exist with the exact signature, and taking each method's
+  address makes the compiler analyse its body, so a cross-compile
+  type-checks the whole backend.
+* Event driven everywhere; the only fixed-rate timer is Win32's 16 ms
+  `SetTimer` during a modal resize drag (as Portal had before).
+* `win32.zig`: Portal's `client/src/view/platform/win32.zig` moved here
+  onto `../Windows` (`USER`, `KERNEL`, `TYPES`, `ENUMS`, `STRUCTS`); its
+  hand-declared user32 externs are gone. New: `WM_MOUSEWHEEL` /
+  `WM_MOUSEHWHEEL` -> `scroll`, `hide()`. DPI functions through
+  `USER.load` (runtime-resolved).
+* `wayland.zig` (Linux only; no X11): xdg-shell toplevel, xdg-decoration
+  (server side when offered), wl_seat keyboard via xkbcommon (keymap fd,
+  modifiers, repeat from `repeat_info` on a **timerfd** in the same poll),
+  wl_pointer (buttons, drags, value120 / discrete / continuous scroll),
+  scale from `wl_surface.preferred_buffer_scale` (v6) or the entered
+  outputs' `wl_output.scale` (`set_buffer_scale`), clipboard through
+  wl_data_device (pipe + 2 s deadline; our own selection is answered
+  locally), wake via an **eventfd**; one `poll` with libwayland's
+  prepare_read / read_events protocol. A lost compositor turns into one
+  `.close`.
+* `wl_data.zig`: **local shim** for wl_data_device_manager / device /
+  source / offer v3 (see "Missing in the binding repos").
+* `cocoa.zig` (macOS): NSApplication + NSWindow, a CAMetalLayer content view
+  (`View.useMetalLayer`), a real NSWindowDelegate subclass
+  (`RendererWindowDelegate`, objc_allocateClassPair through
+  `OBJC.ClassBuilder`) for close / resize / backing scale, live-resize
+  redraw from `windowDidResize:` while `inLiveResize`; waits in
+  `nextEventMatchingMask:untilDate:` (distantFuture for `forever`); `wake()`
+  posts an application-defined NSEvent (`postEvent:atStart:`), coalesced by
+  an atomic flag; NSPasteboard clipboard. arm64 and x86_64 (the binding's
+  `msgSend` handles `_stret`). Replaces Portal's polling cocoa backend (it
+  slept at most 50 ms at a time and had no wake).
+* `smoke.zig`: `zig build window-smoke` opens a window on the host and
+  checks present, wake from a thread, timed waits, clipboard round trip and
+  title at runtime (run it on Linux / macOS to test those backends).
+
+### Instanced2D
+
+* `SurfaceSource` gained **`wayland`** (`VK_KHR_wayland_surface`,
+  `vk.createWaylandSurfaceKHR`). **`xlib` and `xcb` were removed**: nothing
+  uses them any more (Portal's X11 backend is gone; X11 is not supported).
+
+### build.zig / build.zig.zon
+
+* New dependencies `Wayland` (`../Wayland`) and `MacOS` (`../MacOS`), path
+  deps like `Windows`.
+* New public module `Window` (imports `Renderer` and only the target OS's
+  bindings: `Windows`, `Wayland` or `MacOS`; libc is linked off Windows for
+  dlopen, never on Windows).
+* `zig build test-window`: Window unit tests (native) plus `check-window`.
+  `test-lib` now includes it.
+* `zig build check-window`: compile-only check of the Window module (all
+  backend methods) for x86_64-windows, x86_64-linux-gnu, aarch64-macos.
+* `zig build window-smoke`: the runtime smoke test above.
+* Existing modules, steps and options are unchanged. (The demo build,
+  `zig build` / `zig build test` with `-Ddemo=true`, still needs
+  `Vulkan/Bin/glslc.exe` and `Vulkan/Lib`, which this worktree lacks; it
+  failed the same way before these changes.)
+
+### Missing in the binding repos (not modified; for the owner)
+
+* **../Windows** `KERNEL`: `GlobalAlloc`, `GlobalLock`, `GlobalUnlock`,
+  `GlobalFree`, `GlobalSize` and `GMEM_MOVEABLE` (clipboard memory).
+  Declared locally at the top of `src/Window/win32.zig`. No named
+  `MWMO_INPUTAVAILABLE` constant either (local const).
+* **../Wayland**: no `wl_data_device_manager`, `wl_data_device`,
+  `wl_data_source`, `wl_data_offer` (clipboard). Shimmed in
+  `src/Window/wl_data.zig`, written like the package's protocol files on
+  its public `CLIENT` helpers so it can move there unchanged. Also absent:
+  `wp_fractional_scale_v1` / `wp_viewporter` (fractional scaling) and a
+  cursor (wl_cursor / cursor-shape-v1), so the window shows whatever cursor
+  the compositor last set; `XKB.Keysym` lacks keypad names (raw keysym
+  values are used).
+* **../MacOS**: `OBJC.msgSend` stops at 8 arguments, but
+  `+[NSEvent otherEventWithType:...data2:]` needs 9 (`cocoa.zig` `wake`
+  casts `objc_msgSend` itself); no `postEvent:atStart:` wrapper; no
+  `subtype` / `data1` event accessors; `Application.nextEvent` has no
+  timeout (only wait / no wait), so `cocoa.zig` sends
+  `nextEventMatchingMask:untilDate:inMode:dequeue:` itself; no
+  `NSPasteboard` wrapper; no `NSString initWithBytes:length:encoding:`; no
+  `NSWindow inLiveResize`; `WindowEvents` / `windowDelegate` is flags-only
+  (no callback, so live-resize redraw needs its own delegate class, which
+  `cocoa.zig` registers).
+
+### Status
+
+* Win32: runtime-tested (window-smoke; Portal's unit tests and e2e).
+* Wayland and macOS: compile-checked only (cross-compiled from Windows),
+  never run. Untested at runtime: all of it, i.e. mapping/configure, Vulkan
+  surface creation (Wayland surface; MoltenVK), xkb keymaps and repeat,
+  scale changes, clipboard pipes / NSPasteboard, the wake paths, macOS
+  live resize. `zig build window-smoke` on each OS is the first check.

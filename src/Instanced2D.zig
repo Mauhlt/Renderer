@@ -3,8 +3,8 @@
 //! Draws a list of textured, tinted quads ("instances") in one instanced
 //! draw call per frame, sampling a single RGBA8 texture (an atlas). The
 //! window/surface is supplied by the caller as a native handle, so this file
-//! has no windowing code of its own and works for Win32, Xlib, XCB and
-//! Metal (MoltenVK) surfaces.
+//! has no windowing code of its own and works for Win32, Wayland and
+//! Metal (MoltenVK) surfaces (module "Window" provides such a window).
 //!
 //!     var r = try Instanced2D.init(gpa, .{ .win32 = .{ .hinstance = hi, .hwnd = hwnd } }, w, h, .{});
 //!     defer r.deinit();
@@ -28,8 +28,8 @@ const max_swapchain_images = 8;
 
 pub const SurfaceSource = union(enum) {
     win32: struct { hinstance: ?*anyopaque, hwnd: ?*anyopaque },
-    xlib: struct { display: *anyopaque, window: c_ulong },
-    xcb: struct { connection: *anyopaque, window: u32 },
+    /// wl_display and wl_surface (VK_KHR_wayland_surface).
+    wayland: struct { display: *anyopaque, surface: *anyopaque },
     metal: struct { layer: *anyopaque },
 };
 
@@ -283,8 +283,7 @@ fn createInstance(self: *Instanced2D, source: SurfaceSource, app_name: [*:0]cons
     n += 1;
     exts[n] = switch (source) {
         .win32 => vk.khr_win32_surface_extension_name,
-        .xlib => vk.khr_xlib_surface_extension_name,
-        .xcb => vk.khr_xcb_surface_extension_name,
+        .wayland => vk.khr_wayland_surface_extension_name,
         .metal => vk.ext_metal_surface_extension_name,
     };
     n += 1;
@@ -326,13 +325,9 @@ fn createSurface(self: *Instanced2D, source: SurfaceSource) Error!void {
             const info: vk.Win32SurfaceCreateInfoKHR = .{ .hinstance = s.hinstance, .hwnd = s.hwnd };
             try ok(vk.createWin32SurfaceKHR(self.instance, &info, null, &self.surface));
         },
-        .xlib => |s| {
-            const info: vk.XlibSurfaceCreateInfoKHR = .{ .dpy = @ptrCast(s.display), .window = s.window };
-            try ok(vk.createXlibSurfaceKHR(self.instance, &info, null, &self.surface));
-        },
-        .xcb => |s| {
-            const info: vk.XcbSurfaceCreateInfoKHR = .{ .connection = @ptrCast(s.connection), .window = s.window };
-            try ok(vk.createXcbSurfaceKHR(self.instance, &info, null, &self.surface));
+        .wayland => |s| {
+            const info: vk.WaylandSurfaceCreateInfoKHR = .{ .display = @ptrCast(s.display), .surface = @ptrCast(s.surface) };
+            try ok(vk.createWaylandSurfaceKHR(self.instance, &info, null, &self.surface));
         },
         .metal => |s| {
             const info: vk.MetalSurfaceCreateInfoEXT = .{ .p_layer = @ptrCast(s.layer) };

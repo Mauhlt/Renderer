@@ -49,6 +49,51 @@ pub fn build(b: *std.Build) !void {
     lib_step.dependOn(&b.addRunArtifact(lib_tests).step);
     lib_step.dependOn(font_step);
 
+    // Module "Window" (src/Window/root.zig): a native window for Instanced2D
+    // with one interface everywhere. Win32 on ../Windows, Wayland on
+    // ../Wayland, macOS on ../MacOS; only the target OS's bindings are
+    // imported (the Wayland and MacOS packages link libc for dlopen, which a
+    // Windows program must not pick up).
+    const window_mod = b.addModule("Window", .{
+        .root_source_file = b.path("src/Window/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    addWindowImports(b, window_mod, target, optimize, lib_mod);
+    const window_tests = b.addTest(.{ .root_module = window_mod });
+    const window_step = b.step("test-window", "Test the Window module and compile it for Windows, Linux (Wayland) and macOS");
+    window_step.dependOn(&b.addRunArtifact(window_tests).step);
+    lib_step.dependOn(window_step);
+    // Compile-only checks: the Window module (every backend method, see
+    // checkInterface) for each supported OS, whatever the host is.
+    const check_targets = [_]std.Target.Query{
+        .{ .cpu_arch = .x86_64, .os_tag = .windows },
+        .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu },
+        .{ .cpu_arch = .aarch64, .os_tag = .macos },
+    };
+    const cross_step = b.step("check-window", "Compile the Window module for x86_64-windows, x86_64-linux-gnu and aarch64-macos");
+    for (check_targets) |q| {
+        const t = b.resolveTargetQuery(q);
+        const check = b.addTest(.{
+            .name = b.fmt("window-check-{t}", .{q.os_tag.?}),
+            .root_module = windowCheckModule(b, t),
+        });
+        cross_step.dependOn(&check.step);
+    }
+    window_step.dependOn(cross_step);
+    // Runtime check on this machine (opens a window for ~2 s): surface,
+    // present, wake from a thread, timed wait, clipboard, title.
+    const smoke = b.addExecutable(.{ .name = "window-smoke", .root_module = b.createModule(.{
+        .root_source_file = b.path("src/Window/smoke.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "Window", .module = window_mod },
+            .{ .name = "Renderer", .module = lib_mod },
+        },
+    }) });
+    b.step("window-smoke", "Open a Window here and check present, wake, timed wait and clipboard at runtime").dependOn(&b.addRunArtifact(smoke).step);
+
     // The original demo executable (Windows only). Packages that only want
     // the library pass `.demo = false` so the demo's extra dependencies
     // (Image, Windows, glslc) are never needed.
@@ -192,6 +237,45 @@ fn addZigShader(b: *std.Build, mod: *std.Build.Module, name: []const u8, src: []
         .use_llvm = false,
     });
     mod.addAnonymousImport(name, .{ .root_source_file = obj.getEmittedBin() });
+}
+
+/// Imports for module "Window": "Renderer" (for Instanced2D.SurfaceSource)
+/// and the target OS's bindings package.
+fn addWindowImports(
+    b: *std.Build,
+    mod: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    renderer: *std.Build.Module,
+) void {
+    mod.addImport("Renderer", renderer);
+    switch (target.result.os.tag) {
+        .windows => mod.addImport("Windows", b.dependency("Windows", .{ .target = target, .optimize = optimize }).module("Windows")),
+        .macos => mod.addImport("MacOS", b.dependency("MacOS", .{ .target = target, .optimize = optimize }).module("MacOS")),
+        else => mod.addImport("Wayland", b.dependency("Wayland", .{ .target = target, .optimize = optimize }).module("Wayland")),
+    }
+    // dlopen (Wayland, Vulkan loader, Objective-C runtime) needs libc off Windows.
+    if (target.result.os.tag != .windows) mod.link_libc = true;
+}
+
+/// A Renderer + Window module pair for `t`, for compile-only checks.
+fn windowCheckModule(b: *std.Build, t: std.Build.ResolvedTarget) *std.Build.Module {
+    const vulkan = b.dependency("Vulkan", .{ .target = t, .optimize = .Debug }).module("Vulkan");
+    const font = b.createModule(.{ .root_source_file = b.path("src/Font/root.zig"), .target = t, .optimize = .Debug });
+    const renderer = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = t,
+        .optimize = .Debug,
+        .imports = &.{
+            .{ .name = "Vulkan", .module = vulkan },
+            .{ .name = "Font", .module = font },
+        },
+    });
+    addZigShader(b, renderer, "instanced2d_vert.spv", "src/Shaders/instanced2d_vert.zig");
+    addZigShader(b, renderer, "instanced2d_frag.spv", "src/Shaders/instanced2d_frag.zig");
+    const window = b.createModule(.{ .root_source_file = b.path("src/Window/root.zig"), .target = t, .optimize = .Debug });
+    addWindowImports(b, window, t, .Debug, renderer);
+    return window;
 }
 
 fn isShaderFile(name: []const u8) bool {

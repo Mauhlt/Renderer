@@ -7,6 +7,9 @@
         .Image = .{ .path = "../Image", .lazy = true },
         .Vulkan = .{ .path = "../Vulkan" },
         .Windows = .{ .path = "../Windows" },
+        // Window module backends (src/Window): Wayland on Linux, AppKit on macOS.
+        .Wayland = .{ .path = "../Wayland" },
+        .MacOS = .{ .path = "../MacOS" },
     },
     .paths = .{
         "build.zig",
