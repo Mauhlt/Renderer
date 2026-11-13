@@ -83,6 +83,8 @@ const text_delegate_name = "RendererTextDelegate";
 
 /// Longest native text field content kept (bytes).
 const max_text = 4096;
+/// Longest lock message kept (bytes).
+const max_lock_msg = 512;
 
 // ------------------------------------------------------------ the state
 
@@ -115,6 +117,13 @@ const State = struct {
     inactive: bool = false,
     captured: bool = false,
     locked: bool = false,
+    /// The unlock handler was already asked during this activation cycle
+    /// (cleared on didEnterBackground): becoming active again (e.g. after
+    /// the Face ID sheet closes with a cancel) does not ask again; a tap
+    /// on the cover does.
+    prompted: bool = false,
+    /// The lock message on the cover (a UILabel), shown while locked.
+    lock_label: ?*Object = null,
     touch: ?*Object = null,
     touch_last: CGPoint = .{},
 
@@ -139,6 +148,9 @@ const State = struct {
     /// ask for Face ID): called when the app becomes active while locked
     /// and when the cover is tapped.
     unlock_request: ?*const fn () void = null,
+    /// The lock message (m): AppOptions.lock_message, then setLockMessage.
+    lock_msg_buf: [max_lock_msg]u8 = undefined,
+    lock_msg_len: usize = 0,
 
     fn lock(s: *State) void {
         _ = std.c.pthread_mutex_lock(&s.mutex);
@@ -163,6 +175,10 @@ var state: State = .{};
 /// See root.runApp. Main thread; never returns.
 pub fn runApp(options: root.AppOptions, entry: root.EntryFn, ctx: ?*anyopaque) noreturn {
     state.options = options;
+    // Before UIApplicationMain: the scene's first updateCover and first
+    // didBecomeActive already see the lock.
+    state.locked = options.start_locked;
+    storeLockMessage(options.lock_message);
     state.entry = entry;
     state.entry_ctx = ctx;
     const pool = objc.AutoreleasePool.push();
@@ -416,13 +432,52 @@ pub fn isLocked() bool {
     return state.locked;
 }
 
-/// Sets what lifts the lock (`lock_after_background`, `lock()`): called on
-/// the main thread whenever the app becomes active while locked and when
-/// the cover is tapped (e.g. to ask for Face ID again after a cancel). The
+/// Sets what lifts the lock (`lock_after_background`, `start_locked`,
+/// `lock()`): called on the main thread the first time the app becomes
+/// active while locked in each activation cycle (once after launch, once
+/// after each return from the background; not again when e.g. the Face ID
+/// sheet closes with a cancel) and on every tap on the cover. The
 /// handler calls `unlock()` once the user is authenticated. Set it before
 /// runApp.
 pub fn setUnlockHandler(f: ?*const fn () void) void {
     state.unlock_request = f;
+}
+
+/// Any thread: the text on the lock cover (e.g. "Face ID is off for this
+/// app: ..."), replacing AppOptions.lock_message. Longer text is cut at
+/// 512 bytes (at a UTF-8 boundary).
+pub fn setLockMessage(text: []const u8) void {
+    storeLockMessage(text);
+    objc.onMainAsync(null, struct {
+        fn f(_: ?*anyopaque) callconv(.c) void {
+            applyLockMessage();
+        }
+    }.f);
+}
+
+fn storeLockMessage(text: []const u8) void {
+    var n = @min(text.len, max_lock_msg);
+    // Do not cut a UTF-8 sequence (newString refuses invalid UTF-8).
+    if (n < text.len) {
+        while (n > 0 and (text[n] & 0xC0) == 0x80) n -= 1;
+    }
+    state.lock();
+    defer state.unlock();
+    @memcpy(state.lock_msg_buf[0..n], text[0..n]);
+    state.lock_msg_len = n;
+}
+
+/// Main thread: the stored lock message into the cover's label.
+fn applyLockMessage() void {
+    const label = state.lock_label orelse return;
+    var buf: [max_lock_msg]u8 = undefined;
+    state.lock();
+    const n = state.lock_msg_len;
+    @memcpy(buf[0..n], state.lock_msg_buf[0..n]);
+    state.unlock();
+    const s = objc.newString(buf[0..n]);
+    defer if (s) |x| objc.release(x);
+    msgSend(void, label, sel("setText:"), .{s});
 }
 
 /// Any thread: queue an event for the app thread (e.g. a scanned QR code
@@ -502,11 +557,28 @@ fn makeCover(window: *Object) void {
     // UIViewAutoresizingFlexibleWidth | FlexibleHeight.
     msgSend(void, v, sel("setAutoresizingMask:"), .{@as(objc.NSUInteger, 2 | 16)});
     msgSend(void, v, sel("setHidden:"), .{objc.YES});
-    // Taps on the cover go to the app's handler (setCoverTapHandler).
+    // Taps on the cover go to the app's unlock handler (setUnlockHandler).
     if (msgSend(?*Object, objc.getClass("UITapGestureRecognizer"), sel("alloc"), .{})) |ga| {
         const target = msgSend(?*Object, sceneDelegateClass(), sel("new"), .{});
         if (msgSend(?*Object, ga, sel("initWithTarget:action:"), .{ target, sel("coverTapped:") })) |g|
             msgSend(void, v, sel("addGestureRecognizer:"), .{g});
+    }
+    // The lock message: centred, wrapping, 24 pt side margins.
+    if (msgSend(?*Object, objc.getClass("UILabel"), sel("alloc"), .{})) |la| {
+        const b = msgSend(CGRect, v, sel("bounds"), .{});
+        const margin: CGFloat = 24;
+        const r: CGRect = .{ .origin = .{ .x = margin, .y = 0 }, .size = .{ .width = @max(0, b.size.width - 2 * margin), .height = b.size.height } };
+        if (msgSend(?*Object, la, sel("initWithFrame:"), .{r})) |label| {
+            msgSend(void, label, sel("setAutoresizingMask:"), .{@as(objc.NSUInteger, 2 | 16)});
+            msgSend(void, label, sel("setNumberOfLines:"), .{@as(objc.NSInteger, 0)});
+            msgSend(void, label, sel("setTextAlignment:"), .{@as(objc.NSInteger, 1)}); // NSTextAlignmentCenter (iOS)
+            msgSend(void, label, sel("setTextColor:"), .{objc.color(state.options.lock_text_rgb)});
+            msgSend(void, label, sel("setFont:"), .{msgSend(?*Object, objc.getClass("UIFont"), sel("systemFontOfSize:"), .{@as(CGFloat, 17)})});
+            msgSend(void, label, sel("setHidden:"), .{objc.YES});
+            msgSend(void, v, sel("addSubview:"), .{label});
+            state.lock_label = label;
+            applyLockMessage();
+        }
     }
     msgSend(void, window, sel("addSubview:"), .{v});
     state.cover = v;
@@ -523,6 +595,7 @@ fn updateCover() void {
         if (state.text_view) |tv| _ = msgSend(BOOL, tv, sel("resignFirstResponder"), .{});
     }
     msgSend(void, cover, sel("setHidden:"), .{objc.toBOOL(!up)});
+    if (state.lock_label) |l| msgSend(void, l, sel("setHidden:"), .{objc.toBOOL(!state.locked)});
 }
 
 fn mainScreen() ?*Object {
@@ -667,7 +740,16 @@ const SceneDelegate = struct {
     fn didBecomeActive(_: *Object, _: *Selector, _: ?*Object) callconv(.c) void {
         state.inactive = false;
         updateCover();
-        if (state.locked) if (state.unlock_request) |f| f();
+        // At most once per activation cycle: the Face ID sheet itself
+        // makes the scene resign and re-become active, so asking on every
+        // activation would loop after a cancel (and race a success whose
+        // unlock() is still on its way). After that, a tap on the cover.
+        if (state.locked and !state.prompted) {
+            if (state.unlock_request) |f| {
+                state.prompted = true;
+                f();
+            }
+        }
     }
     fn willResignActive(_: *Object, _: *Selector, _: ?*Object) callconv(.c) void {
         state.inactive = true;
@@ -675,6 +757,7 @@ const SceneDelegate = struct {
     }
     fn didEnterBackground(_: *Object, _: *Selector, _: ?*Object) callconv(.c) void {
         if (state.options.lock_after_background) state.locked = true;
+        state.prompted = false;
         updateCover();
         // Stop the app thread's drawing before returning: GPU use in the
         // background gets the app killed. Bounded wait, so a busy app
@@ -863,5 +946,6 @@ comptime {
     _ = &isLocked;
     _ = &postEvent;
     _ = &setUnlockHandler;
+    _ = &setLockMessage;
     _ = &runApp;
 }

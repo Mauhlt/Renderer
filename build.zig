@@ -81,7 +81,7 @@ pub fn build(b: *std.Build) !void {
         .{ .cpu_arch = .x86_64, .os_tag = .linux, .abi = .gnu },
         .{ .cpu_arch = .aarch64, .os_tag = .macos },
     };
-    const cross_step = b.step("check-window", "Compile the Window module for x86_64-windows, x86_64-linux-gnu, aarch64-macos and aarch64-ios");
+    const cross_step = b.step("check-window", "Compile the Window module for x86_64-windows, x86_64-linux-gnu, aarch64-macos and aarch64-ios (and the Font module for aarch64-ios)");
     for (check_targets) |q| {
         const t = b.resolveTargetQuery(q);
         const check = b.addTest(.{
@@ -106,6 +106,17 @@ pub fn build(b: *std.Build) !void {
         }),
     });
     cross_step.dependOn(&ios_check.step);
+    // The Font module's iOS path (CoreText font lookup) as an object too.
+    const font_ios_check = b.addObject(.{
+        .name = "font-check-ios",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/Font/ios_check.zig"),
+            .target = ios_target,
+            .optimize = .Debug,
+            .link_libc = true,
+        }),
+    });
+    cross_step.dependOn(&font_ios_check.step);
     window_step.dependOn(cross_step);
     // Runtime check on this machine (opens a window for ~2 s): surface,
     // present, wake from a thread, timed wait, clipboard, title.

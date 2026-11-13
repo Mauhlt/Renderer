@@ -236,6 +236,20 @@ pub fn onBackgroundAsync(ctx: ?*anyopaque, work: DispatchFn) void {
     dispatch_async_f(q, ctx, work);
 }
 
+extern "c" fn dispatch_queue_create(label: ?[*:0]const u8, attr: ?*anyopaque) ?*anyopaque;
+
+/// A new serial dispatch queue (lives for the process): work posted to it
+/// with `onQueueAsync` runs one item at a time, in order (e.g. a camera
+/// session's startRunning / stopRunning, which must not overlap).
+pub fn newSerialQueue(label: [*:0]const u8) ?*anyopaque {
+    return dispatch_queue_create(label, null); // DISPATCH_QUEUE_SERIAL
+}
+
+/// Runs `work(ctx)` on `queue` later (any thread).
+pub fn onQueueAsync(queue: *anyopaque, ctx: ?*anyopaque, work: DispatchFn) void {
+    dispatch_async_f(queue, ctx, work);
+}
+
 /// Runs `work(ctx)` on the main thread and waits (inline when already on
 /// it). Never call while holding a lock the main thread may take.
 pub fn onMainSync(ctx: ?*anyopaque, work: DispatchFn) void {

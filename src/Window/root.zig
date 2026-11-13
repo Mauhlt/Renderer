@@ -229,8 +229,18 @@ pub const AppOptions = struct {
     /// iOS: after a trip to the background keep the cover up ("locked")
     /// until the app calls `ios.unlock()` (e.g. after Face ID).
     lock_after_background: bool = false,
+    /// iOS: start locked: the cover is up from the scene's first frame and
+    /// the first activation asks the unlock handler. Applied synchronously
+    /// in runApp (an `ios.lock()` before runApp is dispatched to the main
+    /// queue and may land after that first activation).
+    start_locked: bool = false,
+    /// iOS: text shown on the cover while locked (e.g. "Tap to unlock");
+    /// `ios.setLockMessage` replaces it (e.g. why unlocking failed).
+    lock_message: []const u8 = "",
     /// Cover colour.
     cover_rgb: [3]u8 = .{ 0x20, 0x23, 0x29 },
+    /// The lock message's text colour.
+    lock_text_rgb: [3]u8 = .{ 0xE6, 0xE8, 0xEC },
 };
 
 pub const EntryFn = *const fn (ctx: ?*anyopaque) void;

@@ -80,6 +80,9 @@ pub const Font = struct {
     /// Offset of the chosen cmap subtable (absolute) and its format.
     cmap_sub: usize,
     cmap_format: u16,
+    /// head.macStyle: bit 0 bold, bit 1 italic (picks a face in a .ttc
+    /// by style, e.g. the file CoreText names for "Menlo-Bold").
+    mac_style: u16 = 0,
 
     /// Parses a font. `index` selects a face in a .ttc collection (ignored
     /// for single fonts). `data` must outlive the Font.
@@ -156,9 +159,17 @@ pub const Font = struct {
             .hmtx = hm,
             .cmap_sub = 0,
             .cmap_format = 0,
+            .mac_style = try r.u16At(h.off + 44),
         };
         try font.pickCmap(cm);
         return font;
+    }
+
+    pub fn isBold(f: *const Font) bool {
+        return f.mac_style & 1 != 0;
+    }
+    pub fn isItalic(f: *const Font) bool {
+        return f.mac_style & 2 != 0;
     }
 
     /// Number of faces in a .ttc (1 for a plain font).

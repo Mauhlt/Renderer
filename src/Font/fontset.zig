@@ -20,7 +20,8 @@ const primary_paths: []const FontRef = switch (builtin.os.tag) {
     .windows => &.{ .{ .path = "C:\\Windows\\Fonts\\consola.ttf" }, .{ .path = "C:\\Windows\\Fonts\\cour.ttf" } },
     .macos => &.{ .{ .path = "/System/Library/Fonts/Menlo.ttc", .index = 0 }, .{ .path = "/System/Library/Fonts/Monaco.ttf" } },
     // iOS keeps its system fonts in subfolders (readable from the app
-    // sandbox). UNVERIFIED on a device: the first that opens wins.
+    // sandbox). CoreText names the Menlo file first (systemFace); these
+    // are the fallback, UNVERIFIED on a device: the first that opens wins.
     .ios => &.{
         .{ .path = "/System/Library/Fonts/CoreUI/Menlo.ttc", .index = 0 },
         .{ .path = "/System/Library/Fonts/Core/Menlo.ttc", .index = 0 },
@@ -85,6 +86,97 @@ const fallback_paths: []const FontRef = switch (builtin.os.tag) {
     },
 };
 
+const TryError = error{ Missing, Unusable, NotInCoreText };
+
+/// What the last FontSet.load tried and why each failed ("path: cannot be
+/// read; ..."), for the error report when no monospace font loads.
+/// Written only by `load` (one loader at a time).
+var tried_buf: [1536]u8 = undefined;
+var tried_len: usize = 0;
+
+/// The paths (and on iOS the CoreText names) the last FontSet.load tried
+/// without success. Valid until the next load.
+pub fn triedPaths() []const u8 {
+    return tried_buf[0..tried_len];
+}
+
+fn noteTried(what: []const u8, err: TryError) void {
+    const reason = switch (err) {
+        error.Missing => "cannot be read",
+        error.Unusable => "not a usable TrueType font",
+        error.NotInCoreText => "CoreText names no file for it",
+    };
+    const s = std.fmt.bufPrint(tried_buf[tried_len..], "{s}{s}: {s}", .{ if (tried_len == 0) "" else "; ", what, reason }) catch return;
+    tried_len += s.len;
+}
+
+/// The face of a font file with text glyphs: in a .ttc the first whose
+/// head.macStyle has the wanted bold bit and no italic bit, else face 0.
+fn styledFace(data: []const u8, bold: bool) ?ttf.Font {
+    const n = ttf.Font.faceCount(data) catch return null;
+    var i: u32 = 0;
+    while (i < @min(n, 64)) : (i += 1) {
+        const f = ttf.Font.init(data, i) catch continue;
+        if (f.isBold() == bold and !f.isItalic() and FontSet.hasText(&f)) return f;
+    }
+    const f = ttf.Font.init(data, 0) catch return null;
+    return if (FontSet.hasText(&f)) f else null;
+}
+
+/// iOS: CoreText, opened with dlopen from the dyld shared cache (nothing
+/// to link; nothing else in the Font module touches the OS).
+const coretext = struct {
+    const CFTypeRef = *anyopaque;
+    const kCFStringEncodingUTF8: u32 = 0x08000100;
+
+    const Api = struct {
+        CFStringCreateWithBytes: *const fn (?*anyopaque, [*]const u8, isize, u32, u8) callconv(.c) ?CFTypeRef,
+        CFRelease: *const fn (CFTypeRef) callconv(.c) void,
+        CFURLGetFileSystemRepresentation: *const fn (CFTypeRef, u8, [*]u8, isize) callconv(.c) u8,
+        CTFontCreateWithName: *const fn (CFTypeRef, f64, ?*const anyopaque) callconv(.c) ?CFTypeRef,
+        CTFontCopyAttribute: *const fn (CFTypeRef, CFTypeRef) callconv(.c) ?CFTypeRef,
+        kCTFontURLAttribute: CFTypeRef,
+    };
+
+    var api: ?Api = null;
+    var opened: bool = false;
+
+    fn get() ?*const Api {
+        if (api) |*a| return a;
+        if (opened) return null;
+        opened = true;
+        // Kept open for the life of the process.
+        var cf = std.DynLib.open("/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation") catch return null;
+        var ct = std.DynLib.open("/System/Library/Frameworks/CoreText.framework/CoreText") catch return null;
+        var a: Api = undefined;
+        inline for (@typeInfo(Api).@"struct".field_names, @typeInfo(Api).@"struct".field_types) |f_name, f_type| {
+            const lib = if (comptime std.mem.startsWith(u8, f_name, "CF")) &cf else &ct;
+            if (comptime std.mem.startsWith(u8, f_name, "k")) {
+                // Data symbol: the CFStringRef variable.
+                const p = lib.lookup(*const CFTypeRef, f_name) orelse return null;
+                @field(a, f_name) = p.*;
+            } else {
+                @field(a, f_name) = lib.lookup(f_type, f_name) orelse return null;
+            }
+        }
+        api = a;
+        return &api.?;
+    }
+
+    /// The file system path of the font CoreText finds for `name`, or null.
+    fn fontFile(name: []const u8, buf: []u8) ?[]const u8 {
+        const a = get() orelse return null;
+        const s = a.CFStringCreateWithBytes(null, name.ptr, @intCast(name.len), kCFStringEncodingUTF8, 0) orelse return null;
+        defer a.CFRelease(s);
+        const font = a.CTFontCreateWithName(s, 12, null) orelse return null;
+        defer a.CFRelease(font);
+        const url = a.CTFontCopyAttribute(font, a.kCTFontURLAttribute) orelse return null;
+        defer a.CFRelease(url);
+        if (a.CFURLGetFileSystemRepresentation(url, 1, buf.ptr, @intCast(buf.len)) == 0) return null;
+        return std.mem.sliceTo(buf, 0);
+    }
+};
+
 const Face = struct {
     data: []u8,
     font: ttf.Font,
@@ -111,13 +203,16 @@ pub const FontSet = struct {
     fallback_tried: [fallback_paths.len]bool = @splat(false),
     outline: ttf.Outline = .{},
 
+    /// On error.NoMonospaceFont, `triedPaths()` says what was tried.
     pub fn load(gpa: std.mem.Allocator, io: std.Io) !FontSet {
-        const regular = loadFirst(gpa, io, primary_paths) orelse return error.NoMonospaceFont;
+        tried_len = 0;
+        const regular = systemFace(gpa, io, "Menlo-Regular", false) orelse
+            loadFirst(gpa, io, primary_paths) orelse return error.NoMonospaceFont;
         return .{
             .gpa = gpa,
             .io = io,
             .regular = regular,
-            .bold = loadFirst(gpa, io, bold_paths),
+            .bold = systemFace(gpa, io, "Menlo-Bold", true) orelse loadFirst(gpa, io, bold_paths),
         };
     }
 
@@ -129,22 +224,44 @@ pub const FontSet = struct {
     }
 
     fn loadFirst(gpa: std.mem.Allocator, io: std.Io, refs: []const FontRef) ?Face {
-        for (refs) |r| if (loadFace(gpa, io, r)) |f| return f;
+        for (refs) |r| {
+            if (loadFace(gpa, io, r)) |f| return f else |err| noteTried(r.path, err);
+        }
         return null;
     }
 
-    fn loadFace(gpa: std.mem.Allocator, io: std.Io, r: FontRef) ?Face {
-        const data = std.Io.Dir.cwd().readFileAlloc(io, r.path, gpa, .limited(max_font_bytes)) catch return null;
-        const font = ttf.Font.init(data, r.index) catch {
-            gpa.free(data);
+    fn loadFace(gpa: std.mem.Allocator, io: std.Io, r: FontRef) TryError!Face {
+        const data = std.Io.Dir.cwd().readFileAlloc(io, r.path, gpa, .limited(max_font_bytes)) catch return error.Missing;
+        errdefer gpa.free(data);
+        const font = ttf.Font.init(data, r.index) catch return error.Unusable;
+        if (!hasText(&font)) return error.Unusable;
+        return .{ .data = data, .font = font };
+    }
+
+    /// A primary face must actually have the basic Latin glyphs.
+    fn hasText(font: *const ttf.Font) bool {
+        return !(font.glyphIndex('M') == 0 and font.glyphIndex(0x4E00) == 0 and font.glyphIndex(0x2605) == 0);
+    }
+
+    /// iOS: the file CoreText resolves `name` (a PostScript name) to, and
+    /// in a .ttc the face whose head.macStyle matches `bold` (not italic).
+    /// Null elsewhere, or when CoreText or the file is not usable (the
+    /// hard-coded paths follow).
+    fn systemFace(gpa: std.mem.Allocator, io: std.Io, name: []const u8, bold: bool) ?Face {
+        if (builtin.os.tag != .ios) return null;
+        var buf: [1024]u8 = undefined;
+        const path = coretext.fontFile(name, &buf) orelse {
+            noteTried(name, error.NotInCoreText);
             return null;
         };
-        // A primary face must actually have the basic Latin glyphs.
-        if (font.glyphIndex('M') == 0 and font.glyphIndex(0x4E00) == 0 and font.glyphIndex(0x2605) == 0) {
-            gpa.free(data);
+        const data = std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(max_font_bytes)) catch {
+            noteTried(path, error.Missing);
             return null;
-        }
-        return .{ .data = data, .font = font };
+        };
+        if (styledFace(data, bold)) |font| return .{ .data = data, .font = font };
+        noteTried(path, error.Unusable);
+        gpa.free(data);
+        return null;
     }
 
     /// Cell metrics for an em size in pixels.
@@ -176,7 +293,7 @@ pub const FontSet = struct {
         for (fallback_paths, 0..) |ref, i| {
             if (!fs.fallback_tried[i]) {
                 fs.fallback_tried[i] = true;
-                fs.fallbacks[i] = loadFace(fs.gpa, fs.io, ref);
+                fs.fallbacks[i] = loadFace(fs.gpa, fs.io, ref) catch null;
             }
             if (fs.fallbacks[i]) |*face| {
                 if (face.font.glyphIndex(cp) != 0) return face;
@@ -428,4 +545,24 @@ test "font set renders glyphs, boxes and replacement" {
     try std.testing.expect(ink > 0);
     fs.render(0x4E2D, .{}, m, 2, buf); // wide, probably via fallback
     for ([_]u21{ 0x2550, 0x256C, 0x2591, 0x2581, 0x258F, 0x2504 }) |cp| fs.render(cp, .{}, m, 1, one);
+}
+
+test "styled face: macStyle picks the face, plain fonts fall back to face 0" {
+    const data = ttf.test_font;
+    const regular = styledFace(data, false) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(!regular.isBold() and !regular.isItalic());
+    // No bold face in a single-face file: face 0 still serves.
+    try std.testing.expect(styledFace(data, true) != null);
+    try std.testing.expect(styledFace("not a font at all", false) == null);
+}
+
+test "tried paths list each failure" {
+    tried_len = 0;
+    defer tried_len = 0;
+    noteTried("/a/Menlo.ttc", error.Missing);
+    noteTried("Menlo-Bold", error.NotInCoreText);
+    try std.testing.expectEqualStrings("/a/Menlo.ttc: cannot be read; Menlo-Bold: CoreText names no file for it", triedPaths());
+    // A missing font loads nothing and says so.
+    try std.testing.expect(FontSet.loadFirst(std.testing.allocator, std.testing.io, &.{.{ .path = "no/such/missing-font.ttf" }}) == null);
+    try std.testing.expect(std.mem.endsWith(u8, triedPaths(), "no/such/missing-font.ttf: cannot be read"));
 }

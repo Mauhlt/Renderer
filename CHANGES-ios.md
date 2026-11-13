@@ -76,13 +76,21 @@ loop for every platform.
   (`application:shouldAllowExtensionPointIdentifier:`), cover the UI while
   inactive (before the app-switcher snapshot) and while
   `UIScreen.isCaptured` (`UIScreenCapturedDidChangeNotification`), keep the
-  cover after a background trip until the app calls `ios.unlock()`.
+  cover after a background trip until the app calls `ios.unlock()`;
+  `start_locked` puts the lock up synchronously in runApp (so the first
+  activation asks), `lock_message` is the text on the locked cover.
 * iOS extras for the app's own iOS section (not in the interface):
   `Window.ios.rootView()`, `uiWindow()`, `lock()`, `unlock()`,
-  `isLocked()`, `setUnlockHandler()` (called when the app becomes active while locked, and on a tap on the cover), `postEvent()`, and `ios.objc` (runtime helpers, global
-  blocks for completion handlers, main-queue dispatch).
-* Fonts (src/Font/fontset.zig): iOS system font paths
-  (`/System/Library/Fonts/CoreUI/Menlo.ttc`, ...), unverified on a device.
+  `isLocked()`, `setUnlockHandler()` (called once per activation cycle
+  when the app becomes active while locked, and on every tap on the
+  cover), `setLockMessage()`, `postEvent()`, and `ios.objc` (runtime
+  helpers, global blocks for completion handlers, main-queue dispatch, serial queues: `newSerialQueue`, `onQueueAsync`).
+* Fonts (src/Font/fontset.zig): on iOS the Menlo / Menlo Bold files are
+  found at run time through CoreText (CTFontCreateWithName ->
+  kCTFontURLAttribute; CoreText/CoreFoundation dlopen'd, nothing to link),
+  with the hard-coded `/System/Library/Fonts/...` paths as fallback (those
+  are unverified on a device). `fontset.triedPaths()` lists what was tried
+  when no monospace font loads.
 
 ## Instanced2D
 
