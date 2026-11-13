@@ -81,10 +81,6 @@ const scene_delegate_name = "RendererSceneDelegate";
 const view_class_name = "RendererMetalView";
 const text_delegate_name = "RendererTextDelegate";
 
-/// Pan distance (points) before a touch scrolls instead of tapping.
-const tap_slop_pt: CGFloat = 10;
-/// Points of finger travel per scroll notch (Event.scroll counts notches).
-const points_per_notch: CGFloat = 16;
 /// Longest native text field content kept (bytes).
 const max_text = 4096;
 
@@ -120,9 +116,7 @@ const State = struct {
     captured: bool = false,
     locked: bool = false,
     touch: ?*Object = null,
-    touch_start: CGPoint = .{},
     touch_last: CGPoint = .{},
-    panning: bool = false,
 
     // Geometry (m): written on the main thread, read by the app thread.
     width: u32 = 0,
@@ -771,52 +765,42 @@ const MetalView = struct {
         return .{ @floatCast(p.x * k), @floatCast(p.y * k) };
     }
 
-    /// One finger: a tap becomes mouse_down + mouse_up where it landed; a
-    /// drag past the slop becomes scroll events (finger down = content
-    /// down = scroll up, dy > 0).
+    /// One finger is the pointer (the view takes one touch at a time):
+    /// mouse_down where it lands, mouse_move (left held) as it moves,
+    /// mouse_up where it lifts. What a drag means (scrolling, a swipe) and
+    /// what a tap is (a release without moving) is the app's to decide.
     fn began(_: *Object, _: *Selector, touches: ?*Object, _: ?*Object) callconv(.c) void {
         if (state.touch != null) return;
         const t = point(touches) orelse return;
         state.touch = t.touch;
-        state.touch_start = t.p;
         state.touch_last = t.p;
-        state.panning = false;
+        const at = px(t.p);
+        state.push(.{ .mouse_down = .{ .x = at[0], .y = at[1] } });
     }
 
     fn moved(_: *Object, _: *Selector, touches: ?*Object, _: ?*Object) callconv(.c) void {
         const t = point(touches) orelse return;
         if (state.touch != t.touch) return;
-        if (!state.panning) {
-            const dx = t.p.x - state.touch_start.x;
-            const dy = t.p.y - state.touch_start.y;
-            if (dx * dx + dy * dy < tap_slop_pt * tap_slop_pt) return;
-            state.panning = true;
-        }
-        const d_x = t.p.x - state.touch_last.x;
-        const d_y = t.p.y - state.touch_last.y;
         state.touch_last = t.p;
         const at = px(t.p);
-        state.push(.{ .scroll = .{
-            .x = at[0],
-            .y = at[1],
-            .dx = @floatCast(-d_x / points_per_notch),
-            .dy = @floatCast(d_y / points_per_notch),
-        } });
+        state.push(.{ .mouse_move = .{ .x = at[0], .y = at[1], .left_held = true } });
     }
 
     fn ended(_: *Object, _: *Selector, touches: ?*Object, _: ?*Object) callconv(.c) void {
         const t = point(touches) orelse return;
         if (state.touch != t.touch) return;
         state.touch = null;
-        if (state.panning) return;
-        const at = px(state.touch_start);
-        state.push(.{ .mouse_down = .{ .x = at[0], .y = at[1] } });
+        const at = px(t.p);
         state.push(.{ .mouse_up = .{ .x = at[0], .y = at[1] } });
     }
 
+    /// The system took the touch (a gesture, a call): the press ends
+    /// without acting on it.
     fn cancelled(_: *Object, _: *Selector, _: ?*Object, _: ?*Object) callconv(.c) void {
+        if (state.touch == null) return;
         state.touch = null;
-        state.panning = false;
+        const at = px(state.touch_last);
+        state.push(.{ .mouse_up = .{ .x = at[0], .y = at[1], .cancelled = true } });
     }
 };
 

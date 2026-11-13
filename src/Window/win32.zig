@@ -20,6 +20,7 @@ const M = E.Messages;
 const Event = root.Event;
 const Key = root.Key;
 const Mods = root.Mods;
+const Media = root.Media;
 const MouseButton = root.MouseButton;
 
 const HWND = T.HWND;
@@ -171,6 +172,13 @@ pub const Window = struct {
 
     fn handle(self: *Window, hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ?LRESULT {
         const lpi: isize = @backingInt(lp);
+        // WM_APPCOMMAND (not in the Messages enum): media buttons. TRUE when
+        // taken; others go on to DefWindowProc (which passes them up).
+        if (msg == WM_APPCOMMAND) {
+            const m = mediaCommand(USER.hiWord(lp)) orelse return null;
+            self.queue.push(.{ .media = m });
+            return @enumFromInt(1);
+        }
         switch (@as(M, @enumFromInt(msg))) {
             .close => {
                 self.queue.push(.close);
@@ -456,6 +464,30 @@ pub const Window = struct {
 
 fn mousePos(lp: LPARAM) [2]f32 {
     return .{ @floatFromInt(USER.getXLParam(lp)), @floatFromInt(USER.getYLParam(lp)) };
+}
+
+const WM_APPCOMMAND: u32 = 0x0319;
+
+/// The media button an APPCOMMAND names (the high word of WM_APPCOMMAND's
+/// lParam: the command in its low 12 bits, the device in the top 4).
+pub fn mediaCommand(hi: u16) ?Media {
+    return switch (hi & 0x0FFF) {
+        14 => .play_pause, // APPCOMMAND_MEDIA_PLAY_PAUSE
+        46 => .play, // APPCOMMAND_MEDIA_PLAY
+        47 => .pause, // APPCOMMAND_MEDIA_PAUSE
+        13 => .stop, // APPCOMMAND_MEDIA_STOP
+        else => null,
+    };
+}
+
+test "mediaCommand: the four media commands from any device, nothing else" {
+    try std.testing.expectEqual(Media.play_pause, mediaCommand(14).?);
+    try std.testing.expectEqual(Media.play_pause, mediaCommand(0x8000 | 14).?); // FAPPCOMMAND_KEY
+    try std.testing.expectEqual(Media.play, mediaCommand(46).?);
+    try std.testing.expectEqual(Media.pause, mediaCommand(0x1000 | 47).?); // FAPPCOMMAND_OEM
+    try std.testing.expectEqual(Media.stop, mediaCommand(13).?);
+    try std.testing.expect(mediaCommand(8) == null); // APPCOMMAND_VOLUME_MUTE
+    try std.testing.expect(mediaCommand(11) == null); // NEXTTRACK
 }
 
 fn currentMods() Mods {

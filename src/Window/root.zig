@@ -56,7 +56,11 @@
 //! `entry` runs on an app thread started once the scene's window exists;
 //! the same `while (pollEvent) ... waitEvents` loop runs there unchanged
 //! (see ios.zig, "Inverted control"). Events only some platforms produce:
-//! `.insets`, `.background` / `.foreground`, `.text_input`.
+//! `.insets`, `.background` / `.foreground`, `.text_input`, `.media`
+//! (Win32 only so far), and `mouse_up.cancelled` (iOS). On iOS one finger
+//! is the pointer: mouse_down where it lands, mouse_move while it moves,
+//! mouse_up where it lifts; the app decides what a drag means (scroll,
+//! swipe).
 //!
 //! Backends: Win32 (../Windows bindings), Wayland (../Wayland; no X11),
 //! macOS AppKit (../MacOS), iOS UIKit (ios.zig; Objective-C runtime types
@@ -147,8 +151,10 @@ pub const Event = union(enum) {
     /// Pointer moved with the left button held (plain hovering is not
     /// reported).
     mouse_move: struct { x: f32, y: f32, left_held: bool = false },
-    /// Left button released.
-    mouse_up: struct { x: f32, y: f32, button: MouseButton = .left },
+    /// Left button released. `cancelled`: the OS took the press away (iOS:
+    /// touchesCancelled, e.g. a system gesture or a call): end the press
+    /// without acting on it (no tap, no committed drag).
+    mouse_up: struct { x: f32, y: f32, button: MouseButton = .left, cancelled: bool = false },
     /// Wheel / trackpad scroll in notches (1.0 = one wheel detent).
     /// `dy` > 0: away from the user (scroll up); `dx` > 0: to the right.
     scroll: struct { x: f32, y: f32, dx: f32, dy: f32, mods: Mods = .{} },
@@ -165,7 +171,15 @@ pub const Event = union(enum) {
     /// The native text field (showTextInput) changed or was submitted
     /// (Return). Read it with textInputText.
     text_input: enum { changed, submit },
+    /// A media / headset button while the window has the keyboard focus
+    /// (Win32: WM_APPCOMMAND, e.g. a headset's play / pause button or the
+    /// keyboard's media keys). Never on Wayland, macOS or iOS yet (their
+    /// remote-command APIs are a later step).
+    media: Media,
 };
+
+/// What a media button asked for.
+pub const Media = enum { play_pause, play, pause, stop };
 
 /// Pixels (framebuffer) at each edge that the UI should keep clear.
 /// `keyboard` is the height covered by the on-screen keyboard, measured

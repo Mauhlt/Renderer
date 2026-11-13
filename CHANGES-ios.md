@@ -63,9 +63,10 @@ loop for every platform.
 
 ## iOS backend (src/Window/ios.zig, src/Window/ios_objc.zig)
 
-* Touch: one finger. A tap becomes `mouse_down` + `mouse_up` where it
-  landed (buttons, links); a drag past 10 pt becomes `scroll` (16 pt per
-  notch, finger down = scroll up).
+* Touch: one finger is the pointer: `mouse_down` / `mouse_move` /
+  `mouse_up` (`cancelled` on touchesCancelled); the app turns drags into
+  scrolling or swipes (see CHANGES-window-appcommand-pointer.md; before
+  that branch a drag became `scroll` notches).
 * Safe area from `safeAreaInsets`, keyboard from
   `UIKeyboardWillChangeFrameNotification` (`Insets.keyboard`), content scale
   from the screen; `layer.drawableSize` follows the view.
