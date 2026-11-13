@@ -84,6 +84,11 @@ pub const Window = struct {
                 .instance = self.hinstance,
                 .cursor = USER.LoadCursorW(.null, E.SystemCursor.arrow.nameW()),
                 .class_name = class_name,
+                // The program's own icon (resource 1, if the exe has one):
+                // title bar, Alt+Tab and taskbar. Without it Windows shows its
+                // default icon.
+                .icon = appIcon(self.hinstance, 0, 0, .{ .default_size = true, .shared = true }),
+                .small_icon = appIcon(self.hinstance, USER.GetSystemMetrics(.cx_small_icon), USER.GetSystemMetrics(.cy_small_icon), .{ .shared = true }),
             };
             if (USER.RegisterClassExW(&wc) == .null) return error.RegisterClassFailed;
             class_registered = true;
@@ -496,6 +501,13 @@ fn currentMods() Mods {
         .shift = USER.GetKeyState(VK_SHIFT) < 0,
         .alt = USER.GetKeyState(VK_MENU) < 0,
     };
+}
+
+/// Icon resource 1 of the module (the app icon a program links in), or
+/// null. LR_SHARED: the system owns it, so nothing to destroy.
+fn appIcon(inst: T.HINSTANCE, cx: i32, cy: i32, flags: E.LoadImageFlags) T.HICON {
+    const h = USER.LoadImageW(inst, T.makeIntResourceW(1), .icon, cx, cy, flags);
+    return @enumFromInt(@intFromEnum(h));
 }
 
 fn wndProc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) callconv(.winapi) LRESULT {
