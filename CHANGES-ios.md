@@ -25,7 +25,7 @@ it (Win32, Wayland and AppKit as no-ops), and `checkInterface` checks it:
 | `utf8Prefix(s)` | helper | helper |
 
 Programs with an exhaustive `switch` over `Window.Event` need arms for the
-four new events (Portal's TermView is updated on its own branch).
+four new events (Portal's Presenter handles them on its feat/ios-native branch).
 
 ## Inverted control: how the shared loop runs on iOS
 
