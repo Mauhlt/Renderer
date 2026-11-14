@@ -2,7 +2,7 @@
     .name = .Renderer,
     .version = "0.0.0",
     .fingerprint = 0x8efc3ca5a6851ba,
-    .minimum_zig_version = "0.16.0-dev.2676+4e2cec265",
+    .minimum_zig_version = "0.18.0-dev.1005+75d48dfff",
     .dependencies = .{
         .Image = .{ .path = "../Image", .lazy = true },
         .Vulkan = .{ .path = "../Vulkan" },

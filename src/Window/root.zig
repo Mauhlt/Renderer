@@ -127,7 +127,7 @@ pub const Key = enum {
 
 pub const MouseButton = enum { left, right, middle };
 
-pub const Mods = packed struct(u8) {
+pub const Mods = bitpack struct(u8) {
     ctrl: bool = false,
     shift: bool = false,
     alt: bool = false,

@@ -182,7 +182,7 @@ const Face = struct {
     font: ttf.Font,
 };
 
-pub const Style = packed struct(u2) { bold: bool = false, italic: bool = false };
+pub const Style = bitpack struct(u2) { bold: bool = false, italic: bool = false };
 
 pub const Metrics = struct {
     em: f32,
