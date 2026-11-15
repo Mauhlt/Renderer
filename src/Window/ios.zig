@@ -579,12 +579,12 @@ fn makeTextView(view: *Object) ?*Object {
 /// UIKit's raw values. Called when they change; a keyboard that is already
 /// up picks the new ones up on reloadInputViews.
 fn applyTraits(tv: *Object, t: root.TextTraits) void {
-    msgSend(void, tv, sel("setSmartQuotesType:"), .{@as(objc.NSInteger, @intFromEnum(t.smart_quotes))});
-    msgSend(void, tv, sel("setSmartDashesType:"), .{@as(objc.NSInteger, @intFromEnum(t.smart_dashes))});
-    msgSend(void, tv, sel("setSmartInsertDeleteType:"), .{@as(objc.NSInteger, @intFromEnum(t.smart_insert_delete))});
-    msgSend(void, tv, sel("setAutocapitalizationType:"), .{@as(objc.NSInteger, @intFromEnum(t.capitalization))});
-    msgSend(void, tv, sel("setKeyboardAppearance:"), .{@as(objc.NSInteger, @intFromEnum(t.keyboard_appearance))});
-    msgSend(void, tv, sel("setReturnKeyType:"), .{@as(objc.NSInteger, @intFromEnum(t.return_key))});
+    msgSend(void, tv, sel("setSmartQuotesType:"), .{@as(objc.NSInteger, @backingInt(t.smart_quotes))});
+    msgSend(void, tv, sel("setSmartDashesType:"), .{@as(objc.NSInteger, @backingInt(t.smart_dashes))});
+    msgSend(void, tv, sel("setSmartInsertDeleteType:"), .{@as(objc.NSInteger, @backingInt(t.smart_insert_delete))});
+    msgSend(void, tv, sel("setAutocapitalizationType:"), .{@as(objc.NSInteger, @backingInt(t.capitalization))});
+    msgSend(void, tv, sel("setKeyboardAppearance:"), .{@as(objc.NSInteger, @backingInt(t.keyboard_appearance))});
+    msgSend(void, tv, sel("setReturnKeyType:"), .{@as(objc.NSInteger, @backingInt(t.return_key))});
     if (msgSend(BOOL, tv, sel("isFirstResponder"), .{}) == objc.YES) msgSend(void, tv, sel("reloadInputViews"), .{});
 }
 
