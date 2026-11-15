@@ -131,10 +131,12 @@ pub fn build(b: *std.Build) !void {
     }) });
     b.step("window-smoke", "Open a Window here and check present, wake, timed wait and clipboard at runtime").dependOn(&b.addRunArtifact(smoke).step);
 
-    // The original demo executable (Windows only). Packages that only want
-    // the library pass `.demo = false` so the demo's extra dependencies
-    // (Image, Windows, glslc) are never needed.
-    const demo = b.option(bool, "demo", "Build the Renderer demo executable (default true)") orelse true;
+    // The original demo executable (Windows only). It needs the untracked
+    // Vulkan SDK folder (Vulkan/Lib, Vulkan/Include, Vulkan/Bin/glslc.exe)
+    // and the lazy Image dependency, so it is on only when this repo is the
+    // root build; a package user never builds it unless it passes
+    // `.demo = true` (Portal passes `.demo = false` as well).
+    const demo = b.option(bool, "demo", "Build the Renderer demo executable (default: only in this repo)") orelse (b.pkg_hash.len == 0);
     if (!demo) return;
     switch (target.result.os.tag) {
         .windows => {},
