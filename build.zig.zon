@@ -4,15 +4,9 @@
     .fingerprint = 0x8efc3ca5a6851ba,
     .minimum_zig_version = "0.18.0-dev.1005+75d48dfff",
     // Pinned commits on GitHub. Build against local checkouts with
-    // `zig build --fork=../Vulkan --fork=../Image ...`. Image and Renderer
-    // pin the same Vulkan commit, so a program using both gets one module.
+    // `zig build --fork=../Vulkan ...`. Image pins the same Vulkan commit, so a
+    // program using Image and Renderer gets one shared "Vulkan" module.
     .dependencies = .{
-        // Only the demo uses Image.
-        .Image = .{
-            .url = "git+https://github.com/Mauhlt/Image#51fbf7d1232b1cef232c84a0ea9eb2294a09c264",
-            .hash = "Image-0.0.0-0z0ITKO-nAFQZrAlL8vfiOy3GUE3E8Sy2KUaTyiVrkse",
-            .lazy = true,
-        },
         .Vulkan = .{
             .url = "git+https://github.com/Mauhlt/Vulkan#b831b1e464db394c2ddb8da11d5dff93f1df4144",
             .hash = "Vulkan-0.1.0-9v7hoY4bAACSpjlULEH56u3k6cYDDZa1hgBgVU-lkUuR",
