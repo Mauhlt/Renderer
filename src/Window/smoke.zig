@@ -8,6 +8,7 @@
 const std = @import("std");
 const Window = @import("Window");
 const Renderer = @import("Renderer");
+const test_shaders = @import("test_shaders");
 
 fn waker(w: *Window.Window) void {
     w.wake();
@@ -22,7 +23,11 @@ pub fn main(init: std.process.Init) !void {
     defer win.deinit();
     var fb = win.framebufferSize();
     std.debug.print("window: {d}x{d} px, scale {d}\n", .{ fb[0], fb[1], win.scale() });
-    const r = try Renderer.Instanced2D.init(gpa, win.surfaceSource(), fb[0], fb[1], .{ .app_name = "Window smoke" });
+    const r = try Renderer.Instanced2D.init(gpa, win.surfaceSource(), fb[0], fb[1], .{
+        .app_name = "Window smoke",
+        .vertex_spirv = &test_shaders.vert,
+        .fragment_spirv = &test_shaders.frag,
+    });
     defer r.deinit();
     try r.updateTexture(0, 0, 1, 1, &.{ 255, 255, 255, 255 });
 

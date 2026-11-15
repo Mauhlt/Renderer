@@ -29,9 +29,10 @@ pub fn build(b: *std.Build) !void {
     font_step.dependOn(&font_wasm.step);
 
     // Reusable library module "Renderer" (src/root.zig): Instanced2D plus
-    // re-exports of the Vulkan bindings and the Font module. Needs only the Vulkan package, works
-    // for any target, and uses shaders written in Zig (src/Shaders/*.zig)
-    // compiled to SPIR-V by the Zig compiler, so no glslc is required.
+    // re-exports of the Vulkan bindings and the Font module. Needs only the
+    // Vulkan package and works for any target. It ships no shaders: the app
+    // passes its own SPIR-V to Instanced2D.init (its "Shader contract"),
+    // compiled from Zig with `addShader` below.
     const vulkan_lib = b.dependency("Vulkan", .{ .target = target, .optimize = optimize }).module("Vulkan");
     const lib_mod = b.addModule("Renderer", .{
         .root_source_file = b.path("src/root.zig"),
@@ -42,11 +43,23 @@ pub fn build(b: *std.Build) !void {
             .{ .name = "Font", .module = font_mod },
         },
     });
-    addZigShader(b, lib_mod, "instanced2d_vert.spv", "src/Shaders/instanced2d_vert.zig");
-    addZigShader(b, lib_mod, "instanced2d_frag.spv", "src/Shaders/instanced2d_frag.zig");
     const lib_tests = b.addTest(.{ .root_module = lib_mod });
     const lib_step = b.step("test-lib", "Test the Renderer library module (and the Font module)");
     lib_step.dependOn(&b.addRunArtifact(lib_tests).step);
+    // Test shaders (src/testing): only Renderer's own tests and the
+    // window-smoke step use them, never the library module.
+    const test_shaders = b.createModule(.{
+        .root_source_file = b.path("src/testing/shaders.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "Renderer", .module = lib_mod }},
+    });
+    for ([_][]const u8{ "solid_vert", "solid_frag" }) |name| {
+        const spv = addShader(b, name, b.path(b.fmt("src/testing/shaders/{s}.zig", .{name})));
+        test_shaders.addAnonymousImport(b.fmt("{s}.spv", .{name}), .{ .root_source_file = spv });
+    }
+    const shader_tests = b.addTest(.{ .root_module = test_shaders });
+    lib_step.dependOn(&b.addRunArtifact(shader_tests).step);
     lib_step.dependOn(font_step);
 
     // Module "Window" (src/Window/root.zig): a native window for Instanced2D
@@ -127,6 +140,7 @@ pub fn build(b: *std.Build) !void {
         .imports = &.{
             .{ .name = "Window", .module = window_mod },
             .{ .name = "Renderer", .module = lib_mod },
+            .{ .name = "test_shaders", .module = test_shaders },
         },
     }) });
     b.step("window-smoke", "Open a Window here and check present, wake, timed wait and clipboard at runtime").dependOn(&b.addRunArtifact(smoke).step);
@@ -136,6 +150,7 @@ pub fn build(b: *std.Build) !void {
     // same without running anything, so a plain build still checks the code.
     b.step("test", "Run all tests (test-lib: the Renderer, Font and Window modules) and the compile checks").dependOn(lib_step);
     b.getInstallStep().dependOn(&lib_tests.step);
+    b.getInstallStep().dependOn(&shader_tests.step);
     b.getInstallStep().dependOn(&font_tests.step);
     b.getInstallStep().dependOn(&window_tests.step);
     b.getInstallStep().dependOn(cross_step);
@@ -143,19 +158,28 @@ pub fn build(b: *std.Build) !void {
     b.getInstallStep().dependOn(&smoke.step);
 }
 
-/// Compiles a Zig shader to SPIR-V with the self-hosted backend and makes the
-/// binary available to `mod` as `@embedFile(name)`.
-fn addZigShader(b: *std.Build, mod: *std.Build.Module, name: []const u8, src: []const u8) void {
+/// Compiles a shader written in Zig (one entry point `export fn main()`
+/// with `callconv(.spirv_vertex)`, `.spirv_fragment` or `.spirv_kernel`;
+/// the calling convention sets the stage) to SPIR-V for Vulkan, with the
+/// Zig compiler's self-hosted backend: no glslc or Vulkan SDK. Returns the
+/// .spv file. For apps, from their build.zig:
+///
+///     const spv = @import("Renderer").addShader(b, "quad_vert", b.path("src/shaders/quad_vert.zig"));
+///     mod.addAnonymousImport("quad_vert.spv", .{ .root_source_file = spv });
+///
+/// and in the module: `const vert align(4) = @embedFile("quad_vert.spv").*;`,
+/// passed to Instanced2D.init as `.vertex_spirv = &vert`.
+pub fn addShader(b: *std.Build, name: []const u8, root_source_file: std.Build.LazyPath) std.Build.LazyPath {
     const obj = b.addObject(.{
         .name = name,
         .root_module = b.createModule(.{
-            .root_source_file = b.path(src),
+            .root_source_file = root_source_file,
             .target = b.resolveTargetQuery(.{ .cpu_arch = .spirv32, .os_tag = .vulkan, .ofmt = .spirv }),
             .optimize = .ReleaseFast,
         }),
         .use_llvm = false,
     });
-    mod.addAnonymousImport(name, .{ .root_source_file = obj.getEmittedBin() });
+    return obj.getEmittedBin();
 }
 
 /// Imports for module "Window": "Renderer" (for Instanced2D.SurfaceSource)
@@ -207,8 +231,6 @@ fn windowCheckModule(b: *std.Build, t: std.Build.ResolvedTarget) *std.Build.Modu
             .{ .name = "Font", .module = font },
         },
     });
-    addZigShader(b, renderer, "instanced2d_vert.spv", "src/Shaders/instanced2d_vert.zig");
-    addZigShader(b, renderer, "instanced2d_frag.spv", "src/Shaders/instanced2d_frag.zig");
     const window = b.createModule(.{ .root_source_file = b.path("src/Window/root.zig"), .target = t, .optimize = .Debug });
     addWindowImports(b, window, t, .Debug, renderer, null);
     return window;

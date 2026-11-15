@@ -7,7 +7,7 @@
 //!
 //!     const win = try Window.init(gpa, "Title", 800, 600);   // logical size
 //!     defer win.deinit();
-//!     const r = try Instanced2D.init(gpa, win.surfaceSource(), fb[0], fb[1], .{});
+//!     const r = try Instanced2D.init(gpa, win.surfaceSource(), fb[0], fb[1], .{ .vertex_spirv = &vert, .fragment_spirv = &frag });
 //!     while (true) {
 //!         while (win.pollEvent()) |e| switch (e) { .close => return, else => {} };
 //!         // draw

@@ -6,7 +6,10 @@
 //! has no windowing code of its own and works for Win32, Wayland and
 //! Metal (MoltenVK) surfaces (module "Window" provides such a window).
 //!
-//!     var r = try Instanced2D.init(gpa, .{ .win32 = .{ .hinstance = hi, .hwnd = hwnd } }, w, h, .{});
+//!     var r = try Instanced2D.init(gpa, .{ .win32 = .{ .hinstance = hi, .hwnd = hwnd } }, w, h, .{
+//!         .vertex_spirv = &vert_spv, // the app's shaders: "Shader contract" below
+//!         .fragment_spirv = &frag_spv,
+//!     });
 //!     defer r.deinit();
 //!     try r.updateTexture(0, 0, 1, 1, &.{ 255, 255, 255, 255 });   // a white texel
 //!     r.resize(new_w, new_h);                                     // on window resize
@@ -14,8 +17,26 @@
 //!
 //! Colours are passed through unchanged (UNORM swapchain preferred), so
 //! sRGB-encoded colours appear as given; alpha blending is "over".
-//! Shaders are Zig code in src/Shaders/instanced2d_*.zig, compiled to SPIR-V
-//! by build.zig.
+//!
+//! Shader contract. The app supplies both shaders as SPIR-V (Options
+//! `vertex_spirv`, `fragment_spirv`); the library ships none. build.zig's
+//! `addShader` compiles a Zig shader to SPIR-V for any app the same way.
+//! The pipeline the two shaders must match:
+//!   - entry point `main` in each module (vertex, fragment).
+//!   - vertex input: one binding (0), advanced per instance, stride
+//!     @sizeOf(Instance) = 36 bytes; each instance is a 4-vertex triangle
+//!     strip (gl_VertexIndex 0..3: bit 0 = right edge, bit 1 = bottom edge).
+//!       location 0: rect  vec4 (r32g32b32a32_sfloat): x, y, w, h already in
+//!                   normalised device coordinates (drawFrame converts the
+//!                   pixel rect: x' = x * 2 / width - 1, w' = w * 2 / width)
+//!       location 1: uv    vec4 (r32g32b32a32_sfloat): u0, v0, u1, v1
+//!       location 2: color vec4 (r8g8b8a8_unorm): 0..1
+//!   - descriptor set 0, binding 0: combined image sampler (the RGBA8
+//!     texture, linear filtering), fragment stage.
+//!   - no push constants and no other descriptors; one colour attachment
+//!     (fragment output location 0, the swapchain format, "over" blending).
+//! The vertex shader writes gl_Position; what it passes on to the fragment
+//! shader is the app's choice.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -43,6 +64,11 @@ pub const Instance = extern struct {
 };
 
 pub const Options = struct {
+    /// The vertex and fragment shaders as SPIR-V (see "Shader contract"
+    /// above), e.g. `const v align(4) = @embedFile("x.spv").*;` and
+    /// `.vertex_spirv = &v`. Only read during init.
+    vertex_spirv: []align(4) const u8,
+    fragment_spirv: []align(4) const u8,
     app_name: [*:0]const u8 = "Instanced2D",
     texture_width: u32 = 1024,
     texture_height: u32 = 1024,
@@ -55,13 +81,19 @@ pub const Error = error{
     NoSuitableDevice,
     NoSuitableMemoryType,
     SurfaceUnsupported,
+    /// A shader is not SPIR-V (too short, not whole words, no magic number).
+    InvalidShaderCode,
     TextureRegionOutOfBounds,
     VulkanCallFailed,
     OutOfMemory,
 };
 
-const vert_spv align(4) = @embedFile("instanced2d_vert.spv").*;
-const frag_spv align(4) = @embedFile("instanced2d_frag.spv").*;
+/// Checks that `code` looks like a SPIR-V module: whole 32-bit words, at
+/// least the 5-word header, and the magic number in host byte order.
+pub fn checkSpirv(code: []align(4) const u8) Error!void {
+    if (code.len < 20 or code.len % 4 != 0) return error.InvalidShaderCode;
+    if (std.mem.bytesAsSlice(u32, code)[0] != 0x07230203) return error.InvalidShaderCode;
+}
 
 const Frame = struct {
     cmd: vk.CommandBuffer = .null,
@@ -127,6 +159,8 @@ pub fn init(
     height: u32,
     options: Options,
 ) Error!*Instanced2D {
+    try checkSpirv(options.vertex_spirv);
+    try checkSpirv(options.fragment_spirv);
     const self = try gpa.create(Instanced2D);
     self.* = .{ .gpa = gpa, .wanted_width = width, .wanted_height = height };
     errdefer {
@@ -138,7 +172,7 @@ pub fn init(
     try self.createSurface(source);
     try self.pickDevice();
     try self.createDevice();
-    try self.createRenderPassAndPipeline();
+    try self.createRenderPassAndPipeline(options.vertex_spirv, options.fragment_spirv);
     try self.createCommandObjects();
     try self.createTexture(options.texture_width, options.texture_height);
     try self.createSwapchain();
@@ -446,7 +480,7 @@ fn chooseFormat(self: *Instanced2D) Error!void {
     }
 }
 
-fn createRenderPassAndPipeline(self: *Instanced2D) Error!void {
+fn createRenderPassAndPipeline(self: *Instanced2D, vert_spv: []align(4) const u8, frag_spv: []align(4) const u8) Error!void {
     try self.chooseFormat();
     const attachment: vk.AttachmentDescription = .{
         .format = self.swapchain_format,
@@ -495,10 +529,10 @@ fn createRenderPassAndPipeline(self: *Instanced2D) Error!void {
 
     var vert: vk.ShaderModule = .null;
     var frag: vk.ShaderModule = .null;
-    const vinfo: vk.ShaderModuleCreateInfo = .{ .code_size = vert_spv.len, .p_code = @ptrCast(&vert_spv) };
+    const vinfo: vk.ShaderModuleCreateInfo = .{ .code_size = vert_spv.len, .p_code = @ptrCast(vert_spv.ptr) };
     try ok(vk.createShaderModule(self.device, &vinfo, null, &vert));
     defer vk.destroyShaderModule(self.device, vert, null);
-    const finfo: vk.ShaderModuleCreateInfo = .{ .code_size = frag_spv.len, .p_code = @ptrCast(&frag_spv) };
+    const finfo: vk.ShaderModuleCreateInfo = .{ .code_size = frag_spv.len, .p_code = @ptrCast(frag_spv.ptr) };
     try ok(vk.createShaderModule(self.device, &finfo, null, &frag));
     defer vk.destroyShaderModule(self.device, frag, null);
 
@@ -926,7 +960,16 @@ fn destroyAll(self: *Instanced2D) void {
 
 test "instance layout matches the vertex attributes" {
     try std.testing.expectEqual(@as(usize, 36), @sizeOf(Instance));
-    try std.testing.expectEqual(@as(usize, 0), vert_spv.len % 4);
-    try std.testing.expectEqual(@as(u32, 0x07230203), std.mem.readInt(u32, vert_spv[0..4], .little));
-    try std.testing.expectEqual(@as(u32, 0x07230203), std.mem.readInt(u32, frag_spv[0..4], .little));
+    try std.testing.expectEqual(@as(usize, 0), @offsetOf(Instance, "rect"));
+    try std.testing.expectEqual(@as(usize, 16), @offsetOf(Instance, "uv"));
+    try std.testing.expectEqual(@as(usize, 32), @offsetOf(Instance, "color"));
+}
+
+test "checkSpirv accepts a SPIR-V header and rejects anything else" {
+    const header align(4) = [5]u32{ 0x07230203, 0x00010000, 0, 1, 0 };
+    try checkSpirv(std.mem.sliceAsBytes(&header));
+    try std.testing.expectError(error.InvalidShaderCode, checkSpirv(std.mem.sliceAsBytes(&header)[0..16]));
+    try std.testing.expectError(error.InvalidShaderCode, checkSpirv(std.mem.sliceAsBytes(&header)[0..18]));
+    const swapped align(4) = [5]u32{ 0x03022307, 0x00010000, 0, 1, 0 };
+    try std.testing.expectError(error.InvalidShaderCode, checkSpirv(std.mem.sliceAsBytes(&swapped)));
 }
