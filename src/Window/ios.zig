@@ -137,6 +137,11 @@ const State = struct {
     // the main thread applies it in applyUi.
     want_shown: bool = false,
     want_field: root.TextField = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
+    /// A focus request not yet applied (m). Set by showTextInput when the
+    /// field asks for focus and cleared only once the main thread made it
+    /// first responder, so a request that is true for one frame is never
+    /// lost to a later frame that no longer asks (applyUi coalesces).
+    focus_pending: bool = false,
     want_text_gen: u64 = 0,
     applied_text_gen: u64 = 0,
     text_buf: [max_text]u8 = undefined,
@@ -351,7 +356,8 @@ pub const Window = struct {
     pub fn showTextInput(self: *Window, field: root.TextField) bool {
         _ = self;
         state.lock();
-        const changed = !state.want_shown or !std.meta.eql(state.want_field, field);
+        const changed = !state.want_shown or !std.meta.eql(state.want_field, field) or (field.focus and !state.focus_pending);
+        if (field.focus) state.focus_pending = true;
         state.want_shown = true;
         state.want_field = field;
         state.unlock();
@@ -364,6 +370,7 @@ pub const Window = struct {
         state.lock();
         const changed = state.want_shown;
         state.want_shown = false;
+        state.focus_pending = false;
         state.unlock();
         if (changed) postUi();
     }
@@ -412,6 +419,7 @@ pub fn unlock() void {
         fn f(_: ?*anyopaque) callconv(.c) void {
             state.locked = false;
             updateCover();
+            postUi();
         }
     }.f);
 }
@@ -502,6 +510,7 @@ fn applyUi(_: ?*anyopaque) callconv(.c) void {
     const field = state.want_field;
     const s = state.content_scale;
     const gen = state.want_text_gen;
+    const focus = state.focus_pending;
     var tmp: [max_text]u8 = undefined;
     const n = state.text_len;
     @memcpy(tmp[0..n], state.text_buf[0..n]);
@@ -529,7 +538,14 @@ fn applyUi(_: ?*anyopaque) callconv(.c) void {
         msgSend(void, tv, sel("setText:"), .{str});
     }
     msgSend(void, tv, sel("setHidden:"), .{objc.NO});
-    if (field.focus and !state.locked and !state.inactive) _ = msgSend(BOOL, tv, sel("becomeFirstResponder"), .{});
+    // Locked or inactive: the request stays pending; unlock() and
+    // didBecomeActive post applyUi again.
+    if (focus and !state.locked and !state.inactive) {
+        _ = msgSend(BOOL, tv, sel("becomeFirstResponder"), .{});
+        state.lock();
+        state.focus_pending = false;
+        state.unlock();
+    }
 }
 
 fn makeTextView(view: *Object) ?*Object {
@@ -740,6 +756,7 @@ const SceneDelegate = struct {
     fn didBecomeActive(_: *Object, _: *Selector, _: ?*Object) callconv(.c) void {
         state.inactive = false;
         updateCover();
+        postUi();
         // At most once per activation cycle: the Face ID sheet itself
         // makes the scene resign and re-become active, so asking on every
         // activation would loop after a cancel (and race a success whose
