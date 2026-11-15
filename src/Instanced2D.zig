@@ -205,11 +205,6 @@ pub fn resize(self: *Instanced2D, width: u32, height: u32) void {
     }
 }
 
-/// Current framebuffer size in pixels.
-pub fn framebufferSize(self: *const Instanced2D) [2]u32 {
-    return .{ self.extent.width, self.extent.height };
-}
-
 /// Replaces a rectangle of the texture with tightly packed RGBA8 `pixels`.
 /// Synchronous: waits for the GPU to be idle, so batch updates per frame.
 pub fn updateTexture(self: *Instanced2D, x: u32, y: u32, w: u32, h: u32, pixels: []const u8) Error!void {
@@ -638,25 +633,60 @@ fn createCommandObjects(self: *Instanced2D) Error!void {
 }
 
 fn findMemoryType(self: *Instanced2D, bits: u32, props: vk.MemoryPropertyFlags) Error!u32 {
-    for (0..self.memory_props.memory_type_count) |i| {
-        if (bits & (@as(u32, 1) << @intCast(i)) != 0 and self.memory_props.memory_types[i].property_flags.isSupersetOf(props))
+    return memoryTypeIndex(&self.memory_props, bits, props);
+}
+
+fn memoryTypeIndex(memory_props: *const vk.PhysicalDeviceMemoryProperties, bits: u32, props: vk.MemoryPropertyFlags) Error!u32 {
+    for (0..@min(memory_props.memory_type_count, 32)) |i| {
+        if (bits & (@as(u32, 1) << @intCast(i)) != 0 and memory_props.memory_types[i].property_flags.isSupersetOf(props))
             return @intCast(i);
     }
     return error.NoSuitableMemoryType;
 }
 
+/// A host-visible buffer, its memory and the memory's mapping. All or
+/// nothing: on success all three outputs are set; on failure they are left
+/// unchanged and nothing created here is left behind (an unmapped memory
+/// object is freed, never unmapped).
 fn createBuffer(self: *Instanced2D, size: u64, usage: vk.BufferUsageFlags, buffer: *vk.Buffer, memory: *vk.DeviceMemory, mapped: *?*anyopaque) Error!void {
+    return makeBuffer(vk, self.device, &self.memory_props, size, usage, buffer, memory, mapped);
+}
+
+/// createBuffer on the Vulkan functions in namespace `api` (the bindings;
+/// a recording fake in the tests).
+fn makeBuffer(
+    comptime api: type,
+    device: vk.Device,
+    memory_props: *const vk.PhysicalDeviceMemoryProperties,
+    size: u64,
+    usage: vk.BufferUsageFlags,
+    buffer_out: *vk.Buffer,
+    memory_out: *vk.DeviceMemory,
+    mapped_out: *?*anyopaque,
+) Error!void {
     const info: vk.BufferCreateInfo = .{ .size = size, .usage = usage, .sharing_mode = .exclusive };
-    try ok(vk.createBuffer(self.device, &info, null, buffer));
+    var buffer: vk.Buffer = .null;
+    try ok(api.createBuffer(device, &info, null, &buffer));
+    errdefer api.destroyBuffer(device, buffer, null);
     var reqs: vk.MemoryRequirements = .{};
-    vk.getBufferMemoryRequirements(self.device, buffer.*, &reqs);
+    api.getBufferMemoryRequirements(device, buffer, &reqs);
     const alloc: vk.MemoryAllocateInfo = .{
         .allocation_size = reqs.size,
-        .memory_type_index = try self.findMemoryType(reqs.memory_type_bits, .initMany(&.{ .host_visible_bit, .host_coherent_bit })),
+        .memory_type_index = try memoryTypeIndex(memory_props, reqs.memory_type_bits, .initMany(&.{ .host_visible_bit, .host_coherent_bit })),
     };
-    try ok(vk.allocateMemory(self.device, &alloc, null, memory));
-    try ok(vk.bindBufferMemory(self.device, buffer.*, memory.*, 0));
-    try ok(vk.mapMemory(self.device, memory.*, 0, size, .empty, mapped));
+    var memory: vk.DeviceMemory = .null;
+    try ok(api.allocateMemory(device, &alloc, null, &memory));
+    errdefer api.freeMemory(device, memory, null);
+    try ok(api.bindBufferMemory(device, buffer, memory, 0));
+    var mapped: ?*anyopaque = null;
+    try ok(api.mapMemory(device, memory, 0, size, .empty, &mapped));
+    if (mapped == null) {
+        api.unmapMemory(device, memory);
+        return error.VulkanCallFailed;
+    }
+    buffer_out.* = buffer;
+    memory_out.* = memory;
+    mapped_out.* = mapped;
 }
 
 fn createTexture(self: *Instanced2D, width: u32, height: u32) Error!void {
@@ -817,15 +847,22 @@ fn ensureCapacity(self: *Instanced2D, f: *Frame, n: usize) Error!void {
 }
 
 fn destroyFrameBuffer(self: *Instanced2D, f: *Frame) void {
-    if (f.memory != .null) {
-        vk.unmapMemory(self.device, f.memory);
-        vk.freeMemory(self.device, f.memory, null);
-    }
-    if (f.buffer != .null) vk.destroyBuffer(self.device, f.buffer, null);
-    f.buffer = .null;
-    f.memory = .null;
+    releaseBuffer(vk, self.device, &f.buffer, &f.memory, f.mapped != null);
     f.mapped = null;
     f.capacity = 0;
+}
+
+/// Undoes createBuffer: unmaps only memory that is mapped, then frees the
+/// memory and destroys the buffer (each only if it exists), and clears
+/// both handles.
+fn releaseBuffer(comptime api: type, device: vk.Device, buffer: *vk.Buffer, memory: *vk.DeviceMemory, is_mapped: bool) void {
+    if (memory.* != .null) {
+        if (is_mapped) api.unmapMemory(device, memory.*);
+        api.freeMemory(device, memory.*, null);
+    }
+    if (buffer.* != .null) api.destroyBuffer(device, buffer.*, null);
+    buffer.* = .null;
+    memory.* = .null;
 }
 
 fn record(self: *Instanced2D, f: *Frame, image_index: u32, clear: [4]f32, n: usize) Error!void {
@@ -957,11 +994,8 @@ fn destroyAll(self: *Instanced2D) void {
             if (f.image_available != .null) vk.destroySemaphore(self.device, f.image_available, null);
         }
         if (self.command_pool != .null) vk.destroyCommandPool(self.device, self.command_pool, null);
-        if (self.staging_memory != .null) {
-            vk.unmapMemory(self.device, self.staging_memory);
-            vk.freeMemory(self.device, self.staging_memory, null);
-        }
-        if (self.staging != .null) vk.destroyBuffer(self.device, self.staging, null);
+        releaseBuffer(vk, self.device, &self.staging, &self.staging_memory, self.staging_mapped != null);
+        self.staging_mapped = null;
         if (self.descriptor_pool != .null) vk.destroyDescriptorPool(self.device, self.descriptor_pool, null);
         if (self.sampler != .null) vk.destroySampler(self.device, self.sampler, null);
         if (self.texture_view != .null) vk.destroyImageView(self.device, self.texture_view, null);
@@ -979,6 +1013,123 @@ fn destroyAll(self: *Instanced2D) void {
         vk.destroyInstance(self.instance, null);
         self.instance = .null;
     }
+}
+
+/// Records the buffer calls makeBuffer / releaseBuffer make, and fails the
+/// one named by `fail_at`.
+const FakeVk = struct {
+    const Step = enum { none, create, alloc, bind, map, map_null };
+    var fail_at: Step = .none;
+    var created: u32 = 0;
+    var destroyed: u32 = 0;
+    var allocated: u32 = 0;
+    var freed: u32 = 0;
+    var mapped: u32 = 0;
+    var unmapped: u32 = 0;
+    var bytes: [64]u8 = undefined;
+
+    fn reset(step: Step) void {
+        fail_at = step;
+        created = 0;
+        destroyed = 0;
+        allocated = 0;
+        freed = 0;
+        mapped = 0;
+        unmapped = 0;
+    }
+    pub fn createBuffer(_: vk.Device, _: *const vk.BufferCreateInfo, _: anytype, out: *vk.Buffer) error{Fake}!void {
+        if (fail_at == .create) return error.Fake;
+        created += 1;
+        out.* = @fromBackingInt(7);
+    }
+    pub fn destroyBuffer(_: vk.Device, b: vk.Buffer, _: anytype) void {
+        std.debug.assert(b != .null);
+        destroyed += 1;
+    }
+    pub fn getBufferMemoryRequirements(_: vk.Device, _: vk.Buffer, r: *vk.MemoryRequirements) void {
+        r.size = bytes.len;
+        r.memory_type_bits = 1;
+    }
+    pub fn allocateMemory(_: vk.Device, _: *const vk.MemoryAllocateInfo, _: anytype, out: *vk.DeviceMemory) error{Fake}!void {
+        if (fail_at == .alloc) return error.Fake;
+        allocated += 1;
+        out.* = @fromBackingInt(9);
+    }
+    pub fn freeMemory(_: vk.Device, m: vk.DeviceMemory, _: anytype) void {
+        std.debug.assert(m != .null);
+        freed += 1;
+    }
+    pub fn bindBufferMemory(_: vk.Device, _: vk.Buffer, _: vk.DeviceMemory, _: u64) error{Fake}!void {
+        if (fail_at == .bind) return error.Fake;
+    }
+    pub fn mapMemory(_: vk.Device, _: vk.DeviceMemory, _: u64, _: u64, _: vk.MemoryMapFlags, out: *?*anyopaque) error{Fake}!void {
+        if (fail_at == .map) return error.Fake;
+        mapped += 1;
+        out.* = if (fail_at == .map_null) null else &bytes;
+    }
+    pub fn unmapMemory(_: vk.Device, _: vk.DeviceMemory) void {
+        unmapped += 1;
+    }
+};
+
+fn fakeMemoryProps() vk.PhysicalDeviceMemoryProperties {
+    var p: vk.PhysicalDeviceMemoryProperties = .{};
+    p.memory_type_count = 1;
+    p.memory_types[0].property_flags = .initMany(&.{ .host_visible_bit, .host_coherent_bit });
+    return p;
+}
+
+test "createBuffer: a failed step leaves nothing behind and never unmaps unmapped memory" {
+    const props = fakeMemoryProps();
+    const device: vk.Device = @fromBackingInt(1);
+    for ([_]FakeVk.Step{ .create, .alloc, .bind, .map, .map_null }) |step| {
+        FakeVk.reset(step);
+        var buffer: vk.Buffer = .null;
+        var memory: vk.DeviceMemory = .null;
+        var mapped: ?*anyopaque = null;
+        try std.testing.expectError(error.VulkanCallFailed, makeBuffer(FakeVk, device, &props, 64, .init(.vertex_buffer_bit), &buffer, &memory, &mapped));
+        // Outputs untouched, so the destroy paths see nothing to release.
+        try std.testing.expectEqual(vk.Buffer.null, buffer);
+        try std.testing.expectEqual(vk.DeviceMemory.null, memory);
+        try std.testing.expect(mapped == null);
+        // Everything created was released; only a real mapping is unmapped.
+        try std.testing.expectEqual(FakeVk.created, FakeVk.destroyed);
+        try std.testing.expectEqual(FakeVk.allocated, FakeVk.freed);
+        try std.testing.expectEqual(FakeVk.mapped, FakeVk.unmapped);
+        // The frame / staging release after such a failure is a no-op.
+        releaseBuffer(FakeVk, device, &buffer, &memory, mapped != null);
+        try std.testing.expectEqual(FakeVk.created, FakeVk.destroyed);
+        try std.testing.expectEqual(FakeVk.allocated, FakeVk.freed);
+    }
+}
+
+test "createBuffer then releaseBuffer: one unmap, free and destroy each" {
+    const props = fakeMemoryProps();
+    const device: vk.Device = @fromBackingInt(1);
+    FakeVk.reset(.none);
+    var buffer: vk.Buffer = .null;
+    var memory: vk.DeviceMemory = .null;
+    var mapped: ?*anyopaque = null;
+    try makeBuffer(FakeVk, device, &props, 64, .init(.vertex_buffer_bit), &buffer, &memory, &mapped);
+    try std.testing.expect(buffer != .null and memory != .null and mapped != null);
+    releaseBuffer(FakeVk, device, &buffer, &memory, mapped != null);
+    try std.testing.expectEqual(@as(u32, 1), FakeVk.unmapped);
+    try std.testing.expectEqual(@as(u32, 1), FakeVk.freed);
+    try std.testing.expectEqual(@as(u32, 1), FakeVk.destroyed);
+    try std.testing.expectEqual(vk.Buffer.null, buffer);
+    try std.testing.expectEqual(vk.DeviceMemory.null, memory);
+}
+
+test "createBuffer: no host-visible memory type is an error, with the buffer destroyed" {
+    var props = fakeMemoryProps();
+    props.memory_types[0].property_flags = .init(.device_local_bit);
+    FakeVk.reset(.none);
+    var buffer: vk.Buffer = .null;
+    var memory: vk.DeviceMemory = .null;
+    var mapped: ?*anyopaque = null;
+    try std.testing.expectError(error.NoSuitableMemoryType, makeBuffer(FakeVk, @fromBackingInt(1), &props, 64, .init(.vertex_buffer_bit), &buffer, &memory, &mapped));
+    try std.testing.expectEqual(@as(u32, 1), FakeVk.destroyed);
+    try std.testing.expectEqual(@as(u32, 0), FakeVk.allocated);
 }
 
 test "instance layout matches the vertex attributes" {
