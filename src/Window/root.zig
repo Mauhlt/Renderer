@@ -141,6 +141,8 @@ pub const Event = union(enum) {
     resize: struct { width: u32, height: u32 },
     /// Device scale changed (moved to another monitor).
     scale: f32,
+    /// Draw again (the picture on screen may be stale; iOS: the interface
+    /// orientation changed, e.g. a 180 degree turn that keeps the size).
     expose,
     key: struct { key: Key, mods: Mods },
     /// Typed text. Control characters are never delivered here; Ctrl+letter
@@ -152,8 +154,9 @@ pub const Event = union(enum) {
     /// reported).
     mouse_move: struct { x: f32, y: f32, left_held: bool = false },
     /// Left button released. `cancelled`: the OS took the press away (iOS:
-    /// touchesCancelled, e.g. a system gesture or a call): end the press
-    /// without acting on it (no tap, no committed drag).
+    /// touchesCancelled, e.g. a system gesture or a call, or the interface
+    /// orientation changed): end the press without acting on it (no tap,
+    /// no committed drag).
     mouse_up: struct { x: f32, y: f32, button: MouseButton = .left, cancelled: bool = false },
     /// Wheel / trackpad scroll in notches (1.0 = one wheel detent).
     /// `dy` > 0: away from the user (scroll up); `dx` > 0: to the right.

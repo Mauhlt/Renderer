@@ -90,10 +90,10 @@ pub fn main(init: std.process.Init) !void {
         const w: f32 = @floatFromInt(fb[0]);
         const h: f32 = @floatFromInt(fb[1]);
         const k: f32 = @floatFromInt(frames % 60);
-        try r.drawFrame(.{ 0.08, 0.09, 0.11, 1 }, &.{
+        const drawn = try r.drawFrame(.{ 0.08, 0.09, 0.11, 1 }, &.{
             .{ .rect = .{ w * 0.1 + k * 4, h * 0.3, w * 0.3, h * 0.4 }, .uv = .{ 0, 0, 0, 0 }, .color = .{ 0x6C, 0xC0, 0x70, 255 } },
         });
-        frames += 1;
+        if (drawn == .presented) frames += 1;
         win.waitEvents(16); // a real deadline: animate for the test only
     }
     std.debug.print("presented {d} frames, {d} events\n", .{ frames, events });

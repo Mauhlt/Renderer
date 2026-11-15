@@ -126,6 +126,16 @@ const State = struct {
     lock_label: ?*Object = null,
     touch: ?*Object = null,
     touch_last: CGPoint = .{},
+    /// The scene's last interface orientation (UIInterfaceOrientation):
+    /// a change cancels the touch in flight, including a 180 degree turn
+    /// that leaves the size and insets as they were.
+    orientation: objc.NSInteger = 0,
+    /// The keyboard's end frame in screen coordinates, from the last
+    /// keyboard-frame notification (null before the first). updateGeometry
+    /// measures it against the view's bounds at that moment, so a
+    /// notification that arrives mid-rotation (old bounds) is corrected by
+    /// the layout pass that follows.
+    kb_frame: ?CGRect = null,
 
     // Geometry (m): written on the main thread, read by the app thread.
     width: u32 = 0,
@@ -630,7 +640,9 @@ fn mainScreen() ?*Object {
     return msgSend(?*Object, objc.getClass("UIScreen"), sel("mainScreen"), .{});
 }
 
-/// Main thread: size, scale and safe area from the view.
+/// Main thread: size, scale, safe area and the keyboard's height from the
+/// view's current bounds. Queues `.resize` / `.insets` (when `emit`) only
+/// for what changed.
 fn updateGeometry(emit: bool) void {
     const view = state.view orelse return;
     const b = msgSend(CGRect, view, sel("bounds"), .{});
@@ -642,6 +654,7 @@ fn updateGeometry(emit: bool) void {
         msgSend(void, layer, sel("setDrawableSize:"), .{CGSize{ .width = @floatFromInt(w), .height = @floatFromInt(h) }});
     }
     const safe = msgSend(objc.EdgeInsets, view, sel("safeAreaInsets"), .{});
+    const kb: CGFloat = if (state.kb_frame) |f| keyboardCovered(view, b, f) else 0;
     state.lock();
     const resized = w != state.width or h != state.height;
     const old = state.insets;
@@ -652,6 +665,7 @@ fn updateGeometry(emit: bool) void {
     state.insets.left = @floatCast(safe.left * k);
     state.insets.bottom = @floatCast(safe.bottom * k);
     state.insets.right = @floatCast(safe.right * k);
+    state.insets.keyboard = @floatCast(kb * k);
     const inset_changed = !std.meta.eql(old, state.insets);
     if (emit) {
         if (resized) state.queue.push(.{ .resize = .{ .width = w, .height = h } });
@@ -659,6 +673,29 @@ fn updateGeometry(emit: bool) void {
         if (resized or inset_changed) _ = std.c.pthread_cond_signal(&state.cond);
     }
     state.unlock();
+}
+
+/// Main thread: the height (points) of `view`, whose bounds are `b`, that
+/// the keyboard at `screen_rect` (screen coordinates) covers from the
+/// bottom edge; 0 when it is off screen.
+fn keyboardCovered(view: *Object, b: CGRect, screen_rect: CGRect) CGFloat {
+    const space = if (mainScreen()) |scr| msgSend(?*Object, scr, sel("coordinateSpace"), .{}) else null;
+    const r = if (space) |s|
+        msgSend(CGRect, view, sel("convertRect:fromCoordinateSpace:"), .{ screen_rect, s })
+    else
+        msgSend(CGRect, view, sel("convertRect:fromView:"), .{ screen_rect, @as(?*Object, null) });
+    if (r.size.width <= 0 or r.size.height <= 0) return 0;
+    return std.math.clamp(b.origin.y + b.size.height - r.origin.y, 0, b.size.height);
+}
+
+/// Main thread: end the touch in flight without acting on it (a mouse_up
+/// with `cancelled`, at its last position). Nothing when no touch is
+/// down, so callers may overlap.
+fn cancelTouch() void {
+    if (state.touch == null) return;
+    state.touch = null;
+    const at = MetalView.px(state.touch_last);
+    state.push(.{ .mouse_up = .{ .x = at[0], .y = at[1], .cancelled = true } });
 }
 
 // ----------------------------------------------------------- clipboard
@@ -752,6 +789,7 @@ const SceneDelegate = struct {
         msgSend(void, center, sel("addObserver:selector:name:object:"), .{ self, sel("capturedDidChange:"), UIScreenCapturedDidChangeNotification, @as(?*Object, null) });
         if (mainScreen()) |scr| state.captured = msgSend(BOOL, scr, sel("isCaptured"), .{}) != 0;
         updateCover();
+        state.orientation = msgSend(objc.NSInteger, scene, sel("interfaceOrientation"), .{});
         updateGeometry(false);
         state.ready.store(true, .release);
         if (!state.started) {
@@ -803,22 +841,39 @@ const SceneDelegate = struct {
         state.push(.foreground);
     }
 
+    /// The keyboard's end frame is kept in screen coordinates; the covered
+    /// height is measured in updateGeometry against the bounds of the
+    /// moment (and again by every layout pass, e.g. after a rotation).
     fn keyboardWillChange(_: *Object, _: *Selector, note: ?*Object) callconv(.c) void {
-        const view = state.view orelse return;
         const info = msgSend(?*Object, note, sel("userInfo"), .{});
         const value = msgSend(?*Object, info, sel("objectForKey:"), .{UIKeyboardFrameEndUserInfoKey}) orelse return;
-        const screen_rect = msgSend(CGRect, value, sel("CGRectValue"), .{});
-        const r = msgSend(CGRect, view, sel("convertRect:fromView:"), .{ screen_rect, @as(?*Object, null) });
-        const b = msgSend(CGRect, view, sel("bounds"), .{});
-        const covered = @max(0, b.size.height - r.origin.y);
-        state.lock();
-        const kb: f32 = @floatCast(covered * @as(CGFloat, state.content_scale));
-        if (kb != state.insets.keyboard) {
-            state.insets.keyboard = kb;
-            state.queue.push(.insets);
-            _ = std.c.pthread_cond_signal(&state.cond);
-        }
-        state.unlock();
+        state.kb_frame = msgSend(CGRect, value, sel("CGRectValue"), .{});
+        updateGeometry(true);
+    }
+
+    /// The interface orientation may have changed (both UIKit callbacks
+    /// below land here; only a real change acts). A 90 degree turn also
+    /// resizes, but a 180 degree one (landscape left <-> right) keeps the
+    /// size and the insets, so it would otherwise send nothing: the touch
+    /// in flight is cancelled (its coordinates no longer mean the same
+    /// place) and `.expose` asks the app to lay out and draw again.
+    fn orientationChanged(scene: ?*Object) void {
+        const now = msgSend(objc.NSInteger, scene, sel("interfaceOrientation"), .{});
+        if (now == state.orientation) return;
+        state.orientation = now;
+        cancelTouch();
+        state.push(.expose);
+    }
+
+    /// windowScene:didUpdateCoordinateSpace:interfaceOrientation:traitCollection:
+    /// (iOS 13 on; deprecated in iOS 26, which may call only the next one).
+    fn didUpdateCoordinateSpace(_: *Object, _: *Selector, scene: ?*Object, _: ?*Object, _: objc.NSInteger, _: ?*Object) callconv(.c) void {
+        orientationChanged(scene);
+    }
+
+    /// windowScene:didUpdateEffectiveGeometry: (iOS 26 on).
+    fn didUpdateEffectiveGeometry(_: *Object, _: *Selector, scene: ?*Object, _: ?*Object) callconv(.c) void {
+        orientationChanged(scene);
     }
 
     fn coverTapped(_: *Object, _: *Selector, _: ?*Object) callconv(.c) void {
@@ -843,6 +898,8 @@ fn sceneDelegateClass() *Class {
     b.addMethod("sceneDidEnterBackground:", &SceneDelegate.didEnterBackground, "v@:@");
     b.addMethod("sceneWillEnterForeground:", &SceneDelegate.willEnterForeground, "v@:@");
     b.addMethod("keyboardWillChange:", &SceneDelegate.keyboardWillChange, "v@:@");
+    b.addMethod("windowScene:didUpdateCoordinateSpace:interfaceOrientation:traitCollection:", &SceneDelegate.didUpdateCoordinateSpace, "v@:@@q@");
+    b.addMethod("windowScene:didUpdateEffectiveGeometry:", &SceneDelegate.didUpdateEffectiveGeometry, "v@:@@");
     b.addMethod("capturedDidChange:", &SceneDelegate.capturedDidChange, "v@:@");
     b.addMethod("coverTapped:", &SceneDelegate.coverTapped, "v@:@");
     return b.register();
@@ -909,10 +966,7 @@ const MetalView = struct {
     /// The system took the touch (a gesture, a call): the press ends
     /// without acting on it.
     fn cancelled(_: *Object, _: *Selector, _: ?*Object, _: ?*Object) callconv(.c) void {
-        if (state.touch == null) return;
-        state.touch = null;
-        const at = px(state.touch_last);
-        state.push(.{ .mouse_up = .{ .x = at[0], .y = at[1], .cancelled = true } });
+        cancelTouch();
     }
 };
 

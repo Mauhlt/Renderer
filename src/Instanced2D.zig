@@ -13,7 +13,9 @@
 //!     defer r.deinit();
 //!     try r.updateTexture(0, 0, 1, 1, &.{ 255, 255, 255, 255 });   // a white texel
 //!     r.resize(new_w, new_h);                                     // on window resize
-//!     try r.drawFrame(.{ 0, 0, 0, 1 }, instances);                // rects in pixels
+//!     if (try r.drawFrame(.{ 0, 0, 0, 1 }, instances) == .skipped) {
+//!         // nothing reached the screen: keep the frame dirty, draw again
+//!     }
 //!
 //! Colours are passed through unchanged (UNORM swapchain preferred), so
 //! sRGB-encoded colours appear as given; alpha blending is "over".
@@ -46,6 +48,15 @@ const Instanced2D = @This();
 
 pub const max_frames_in_flight = 2;
 const max_swapchain_images = 8;
+
+/// What drawFrame did with the frame.
+pub const Presented = enum {
+    /// Queued for presentation.
+    presented,
+    /// Nothing reached the screen (minimised, no swapchain yet, or the
+    /// swapchain was out of date and is recreated on the next call).
+    skipped,
+};
 
 pub const SurfaceSource = union(enum) {
     win32: struct { hinstance: ?*anyopaque, hwnd: ?*anyopaque },
@@ -225,12 +236,19 @@ pub fn updateTexture(self: *Instanced2D, x: u32, y: u32, w: u32, h: u32, pixels:
 }
 
 /// Records and presents one frame. Rects are in framebuffer pixels.
-/// Returns without drawing while the window is minimised.
-pub fn drawFrame(self: *Instanced2D, clear: [4]f32, instances: []const Instance) Error!void {
+/// Returns `.skipped` when nothing reached the screen: while the window is
+/// minimised, while no swapchain can be made yet, or when the swapchain
+/// turned out of date (a resize or rotation the app has not seen yet) at
+/// acquire or present. An out-of-date swapchain is recreated at the start
+/// of the next call, so an app that keeps its frame dirty on `.skipped`
+/// and draws again gets the picture on screen; one that treats every
+/// return as drawn can be left with a stale picture until the next
+/// change.
+pub fn drawFrame(self: *Instanced2D, clear: [4]f32, instances: []const Instance) Error!Presented {
     if (self.needs_recreate or self.swapchain == .null) {
-        if (self.wanted_width == 0 or self.wanted_height == 0) return;
+        if (self.wanted_width == 0 or self.wanted_height == 0) return .skipped;
         try self.recreateSwapchain();
-        if (self.swapchain == .null) return;
+        if (self.swapchain == .null) return .skipped;
     }
     const f = &self.frames[self.frame_index];
     try ok(vk.waitForFences(self.device, 1, (&f.in_flight)[0..1], .true, std.math.maxInt(u64)));
@@ -242,7 +260,7 @@ pub fn drawFrame(self: *Instanced2D, clear: [4]f32, instances: []const Instance)
     } else |err| switch (err) {
         error.OutOfDateKHR => {
             self.needs_recreate = true;
-            return;
+            return .skipped;
         },
         else => return error.VulkanCallFailed,
     }
@@ -285,13 +303,18 @@ pub fn drawFrame(self: *Instanced2D, clear: [4]f32, instances: []const Instance)
         .p_swapchains = (&self.swapchain)[0..1],
         .p_image_indices = (&image_index)[0..1],
     };
+    // The frame's fence was submitted either way, so the slot advances.
+    self.frame_index = (self.frame_index + 1) % max_frames_in_flight;
     if (vk.queuePresentKHR(self.queue, &present)) |res| {
         if (res == .suboptimal_khr) self.needs_recreate = true;
+        return .presented;
     } else |err| switch (err) {
-        error.OutOfDateKHR => self.needs_recreate = true,
+        error.OutOfDateKHR => {
+            self.needs_recreate = true;
+            return .skipped;
+        },
         else => return error.VulkanCallFailed,
     }
-    self.frame_index = (self.frame_index + 1) % max_frames_in_flight;
 }
 
 // ----------------------------------------------------------- setup
