@@ -30,5 +30,7 @@
         "build.zig.zon",
         "src",
         "README.md",
+        "LICENSE",
+        "THIRD_PARTY.md",
     },
 }
