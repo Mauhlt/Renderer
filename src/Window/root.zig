@@ -439,8 +439,48 @@ pub fn utf8Prefix(s: []const u8) usize {
     return if (n - 1 + need <= s.len) n - 1 + need else n - 1;
 }
 
+/// The poll(2) timeout (ms) that ends at the absolute monotonic `deadline_ns`
+/// when it is `now_ns`: 0 once it has passed, rounded up so a wake-up never
+/// lands just before the deadline, and capped at maxInt(i32).
+pub fn msUntil(now_ns: u64, deadline_ns: u64) i32 {
+    if (deadline_ns <= now_ns) return 0;
+    const left = deadline_ns - now_ns;
+    const ms = left / std.time.ns_per_ms + @intFromBool(left % std.time.ns_per_ms != 0);
+    return @intCast(@min(ms, std.math.maxInt(i32)));
+}
+
+/// The shorter of two poll(2) timeouts, where a negative one means "none".
+pub fn minTimeout(a: i32, b: i32) i32 {
+    if (a < 0) return b;
+    if (b < 0) return a;
+    return @min(a, b);
+}
+
 comptime {
     _ = &runApp;
+}
+
+test "msUntil: an absolute deadline, rounded up, never negative" {
+    const ms = std.time.ns_per_ms;
+    try std.testing.expectEqual(@as(i32, 2000), msUntil(0, 2000 * ms));
+    try std.testing.expectEqual(@as(i32, 1), msUntil(5 * ms, 5 * ms + 1));
+    try std.testing.expectEqual(@as(i32, 0), msUntil(5 * ms, 5 * ms));
+    try std.testing.expectEqual(@as(i32, 0), msUntil(9 * ms, 5 * ms));
+    try std.testing.expectEqual(@as(i32, std.math.maxInt(i32)), msUntil(0, std.math.maxInt(u64)));
+    // A reader that trickles one byte every 99 ms still ends at the
+    // deadline: the budget shrinks with every wake-up, not only idle ones.
+    const deadline: u64 = 2000 * ms;
+    var now: u64 = 0;
+    var wakes: u32 = 0;
+    while (msUntil(now, deadline) > 0) : (wakes += 1) now += 99 * ms;
+    try std.testing.expectEqual(@as(u32, 21), wakes);
+}
+
+test "minTimeout: negative is no timeout" {
+    try std.testing.expectEqual(@as(i32, -1), minTimeout(-1, -1));
+    try std.testing.expectEqual(@as(i32, 5), minTimeout(-1, 5));
+    try std.testing.expectEqual(@as(i32, 5), minTimeout(5, -1));
+    try std.testing.expectEqual(@as(i32, 0), minTimeout(0, 5));
 }
 
 test {

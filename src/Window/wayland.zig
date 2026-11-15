@@ -37,6 +37,24 @@ const Mods = root.Mods;
 
 const max_outputs = 16;
 const max_offers = 8;
+/// Pastes of our own selection served at once (more are refused: the
+/// reader sees an empty paste).
+const max_sends = 4;
+/// Time limit for reading another client's selection (clipboardText, on
+/// the caller's thread) and for each paste of ours (served from the poll
+/// loop, never blocking it).
+const paste_timeout_ms = 2000;
+
+/// One paste of our selection in progress: the rest of the text goes to
+/// the reader's fd (non-blocking) whenever poll says it is writable, until
+/// done, an error, or the deadline.
+const Send = struct {
+    fd: i32 = -1,
+    /// Own copy: the selection may be replaced or cancelled meanwhile.
+    text: []u8 = &.{},
+    off: usize = 0,
+    deadline_ns: u64 = 0,
+};
 
 const OutputSlot = struct {
     win: *Window = undefined,
@@ -110,6 +128,7 @@ pub const Window = struct {
     dnd_offer: ?*data.DataOffer = null,
     own_source: ?*data.DataSource = null,
     own_text: ?[]u8 = null,
+    sends: [max_sends]Send = @splat(.{}),
 
     live_ctx: ?*anyopaque = null,
     live_fn: ?root.LiveFn = null,
@@ -178,6 +197,7 @@ pub const Window = struct {
 
     fn destroyObjects(self: *Window) void {
         self.stopRepeat();
+        for (&self.sends) |*s| self.endSend(s);
         if (self.own_source) |s| s.destroy();
         self.own_source = null;
         if (self.own_text) |t| self.gpa.free(t);
@@ -307,13 +327,19 @@ pub const Window = struct {
         while (!d.prepareRead()) {
             _ = d.dispatchPending() catch return self.fail();
         }
-        const wait = if (self.queue.pending()) 0 else t;
+        var wait = if (self.queue.pending()) 0 else t;
         _ = d.flush() catch {};
-        var fds = [_]linux.pollfd{
-            .{ .fd = d.getFd(), .events = linux.POLL.IN },
-            .{ .fd = self.wake_fd, .events = linux.POLL.IN },
-            .{ .fd = self.timer_fd, .events = linux.POLL.IN },
-        };
+        var fds: [3 + max_sends]linux.pollfd = undefined;
+        fds[0] = .{ .fd = d.getFd(), .events = linux.POLL.IN, .revents = 0 };
+        fds[1] = .{ .fd = self.wake_fd, .events = linux.POLL.IN, .revents = 0 };
+        fds[2] = .{ .fd = self.timer_fd, .events = linux.POLL.IN, .revents = 0 };
+        // Pastes in progress: writable fds, and their deadlines bound the
+        // wait. A free slot's fd is -1, which poll ignores.
+        const now = monotonicNs();
+        for (self.sends, fds[3..]) |s, *p| {
+            p.* = .{ .fd = s.fd, .events = linux.POLL.OUT, .revents = 0 };
+            if (s.fd >= 0) wait = root.minTimeout(wait, root.msUntil(now, s.deadline_ns));
+        }
         const rc = linux.poll(&fds, fds.len, wait);
         const polled = linux.errno(rc) == .SUCCESS;
         if (polled and fds[0].revents & (linux.POLL.IN | linux.POLL.ERR | linux.POLL.HUP) != 0) {
@@ -321,6 +347,14 @@ pub const Window = struct {
         } else d.cancelRead();
         _ = d.dispatchPending() catch return self.fail();
         if (!polled) return;
+        // Dispatching may have started a new paste in a free slot (polled as
+        // fd -1): only a slot whose own fd was polled acts on revents.
+        const after = monotonicNs();
+        for (&self.sends, fds[3..]) |*s, p| {
+            if (s.fd < 0) continue;
+            if (p.fd == s.fd and p.revents != 0) self.continueSend(s);
+            if (s.fd >= 0 and after >= s.deadline_ns) self.endSend(s);
+        }
         if (fds[1].revents & linux.POLL.IN != 0) drain(self.wake_fd);
         if (fds[2].revents & linux.POLL.IN != 0) {
             var n: u64 = 0;
@@ -339,6 +373,7 @@ pub const Window = struct {
         // once; later waits only watch the wake fd.
         self.dead = true;
         self.stopRepeat();
+        for (&self.sends) |*s| self.endSend(s);
         self.queue.push(.close);
     }
 
@@ -741,7 +776,8 @@ pub const Window = struct {
     }
 
     /// The clipboard's text, read from its owner through a pipe (bounded
-    /// by `max_units` and a 2 s deadline in case the owner never writes).
+    /// by `max_units` and one 2 s deadline for the whole read, in case the
+    /// owner never writes or writes slowly).
     pub fn clipboardText(self: *Window, gpa: std.mem.Allocator, max_units: usize) ?[]u8 {
         // Our own selection: reading it through the compositor would wait
         // on ourselves (we serve `send` on this same thread).
@@ -756,19 +792,23 @@ pub const Window = struct {
         _ = self.display.flush() catch {};
         _ = linux.close(fds[1]);
 
-        const cap = max_units * 3 + 4; // UTF-8 bytes for max_units UTF-16 units
+        const cap = (std.math.mul(usize, max_units, 3) catch std.math.maxInt(usize)) +| 4; // UTF-8 bytes for max_units UTF-16 units
         var buf: std.ArrayList(u8) = .empty;
         defer buf.deinit(gpa);
-        var waited: i32 = 0;
-        while (buf.items.len < cap and waited < 2000) {
+        // One absolute deadline for the whole read: an owner that trickles
+        // bytes cannot keep the UI thread here past it.
+        const deadline = monotonicNs() +| paste_timeout_ms * std.time.ns_per_ms;
+        while (buf.items.len < cap) {
+            const left = root.msUntil(monotonicNs(), deadline);
+            if (left == 0) break;
             var pfd = [_]linux.pollfd{.{ .fd = fds[0], .events = linux.POLL.IN }};
-            const step: i32 = 100;
-            const prc = linux.poll(&pfd, 1, step);
-            if (linux.errno(prc) != .SUCCESS) break;
-            if (prc == 0) {
-                waited += step;
-                continue;
+            const prc = linux.poll(&pfd, 1, left);
+            switch (linux.errno(prc)) {
+                .SUCCESS => {},
+                .INTR => continue,
+                else => break,
             }
+            if (prc == 0) break; // the deadline passed
             var chunk: [4096]u8 = undefined;
             const want = @min(chunk.len, cap - buf.items.len);
             const n = linux.read(fds[0], &chunk, want);
@@ -832,18 +872,7 @@ pub const Window = struct {
 
     fn onDataSource(source: *data.DataSource, ev: data.DataSource.Event, self: *Window) void {
         switch (ev) {
-            .send => |s| {
-                defer _ = linux.close(s.fd);
-                if (source != self.own_source) return;
-                // A blocking write to the reader's pipe (SIGPIPE is ignored
-                // by Zig's start code, so a vanished reader is just EPIPE).
-                var rest = self.own_text orelse return;
-                while (rest.len > 0) {
-                    const n = linux.write(s.fd, rest.ptr, rest.len);
-                    if (linux.errno(n) != .SUCCESS or n == 0) break;
-                    rest = rest[n..];
-                }
-            },
+            .send => |s| self.startSend(source, s.fd),
             .cancelled => {
                 if (source == self.own_source) {
                     self.own_source = null;
@@ -855,7 +884,75 @@ pub const Window = struct {
             else => {},
         }
     }
+
+    /// A reader asked for our selection: write it to `fd` without blocking,
+    /// the rest from the poll loop (pump) until done or the deadline. The
+    /// fd is always closed in the end; a refused or failed paste is just
+    /// an empty or short one for the reader.
+    fn startSend(self: *Window, source: *data.DataSource, fd: i32) void {
+        const text = if (source == self.own_source) self.own_text else null;
+        const slot = for (&self.sends) |*s| {
+            if (s.fd < 0) break s;
+        } else null;
+        if (text == null or slot == null or !setNonBlocking(fd)) {
+            _ = linux.close(fd);
+            return;
+        }
+        const copy = self.gpa.dupe(u8, text.?) catch {
+            _ = linux.close(fd);
+            return;
+        };
+        const s = slot.?;
+        s.* = .{ .fd = fd, .text = copy, .deadline_ns = monotonicNs() +| paste_timeout_ms * std.time.ns_per_ms };
+        self.continueSend(s);
+    }
+
+    /// Writes what the fd takes now (SIGPIPE is ignored by Zig's start
+    /// code, so a vanished reader is just EPIPE); ends the paste when all
+    /// is written or on any error but EAGAIN.
+    fn continueSend(self: *Window, s: *Send) void {
+        while (s.off < s.text.len) {
+            const rest = s.text[s.off..];
+            const n = linux.write(s.fd, rest.ptr, rest.len);
+            switch (linux.errno(n)) {
+                .SUCCESS => {
+                    if (n == 0) return self.endSend(s);
+                    s.off += n;
+                },
+                .INTR => continue,
+                .AGAIN => return, // full: poll says when it drains
+                else => return self.endSend(s),
+            }
+        }
+        self.endSend(s);
+    }
+
+    fn endSend(self: *Window, s: *Send) void {
+        if (s.fd < 0) return;
+        _ = linux.close(s.fd);
+        self.gpa.free(s.text);
+        s.* = .{};
+    }
 };
+
+/// CLOCK_MONOTONIC in nanoseconds (deadlines that wall-clock changes do
+/// not move). If the clock fails, "the end of time", so every deadline
+/// counts as passed and nothing waits on a clock that never moves.
+fn monotonicNs() u64 {
+    var ts: linux.timespec = undefined;
+    if (linux.errno(linux.clock_gettime(.MONOTONIC, &ts)) != .SUCCESS) return std.math.maxInt(u64);
+    return @as(u64, @intCast(ts.sec)) *| std.time.ns_per_s +| @as(u64, @intCast(ts.nsec));
+}
+
+/// O_NONBLOCK on `fd` (the reader's end of a paste), so a reader that
+/// stops reading can never block the UI thread.
+fn setNonBlocking(fd: i32) bool {
+    const got = linux.fcntl(fd, linux.F.GETFL, 0);
+    if (linux.errno(got) != .SUCCESS) return false;
+    var flags: linux.O = @bitCast(@as(u32, @truncate(got)));
+    flags.NONBLOCK = true;
+    return linux.errno(linux.fcntl(fd, linux.F.SETFL, @as(u32, @bitCast(flags)))) == .SUCCESS;
+}
 
 fn keyFromSym(sym: u32) ?Key {
     return switch (sym) {

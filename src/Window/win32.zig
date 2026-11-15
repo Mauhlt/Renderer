@@ -447,25 +447,54 @@ pub const Window = struct {
         const cap = @min(GlobalSize(h) / 2, max_units);
         var n: usize = 0;
         while (n < cap and src[n] != 0) n += 1;
-        const out = gpa.alloc(u8, n * 3) catch return null;
-        var o: usize = 0;
-        var i: usize = 0;
-        while (i < n) {
-            var cp: u21 = 0xFFFD;
-            const u = src[i];
-            if (u >= 0xD800 and u <= 0xDBFF and i + 1 < n and src[i + 1] >= 0xDC00 and src[i + 1] <= 0xDFFF) {
-                cp = 0x10000 + ((@as(u21, u) - 0xD800) << 10) + (src[i + 1] - 0xDC00);
-                i += 2;
-            } else {
-                if (u < 0xD800 or u > 0xDFFF) cp = u;
-                i += 1;
-            }
-            // A 4-byte sequence always comes from 2 units (6 bytes reserved).
-            o += std.unicode.utf8Encode(cp, out[o..]) catch 0;
-        }
-        return gpa.realloc(out, o) catch out[0..o];
+        return utf16ToUtf8Lossy(gpa, src[0..n]);
     }
 };
+
+/// UTF-16 (host order) to a new UTF-8 buffer of exactly the encoded length;
+/// unpaired surrogates become U+FFFD. Null on OOM, with nothing leaked: the
+/// caller frees the result with its own length, so a failed shrink must
+/// not hand back a slice shorter than the allocation.
+fn utf16ToUtf8Lossy(gpa: std.mem.Allocator, src: []align(1) const u16) ?[]u8 {
+    const n = src.len;
+    const out = gpa.alloc(u8, std.math.mul(usize, n, 3) catch return null) catch return null;
+    var o: usize = 0;
+    var i: usize = 0;
+    while (i < n) {
+        var cp: u21 = 0xFFFD;
+        const u = src[i];
+        if (u >= 0xD800 and u <= 0xDBFF and i + 1 < n and src[i + 1] >= 0xDC00 and src[i + 1] <= 0xDFFF) {
+            cp = 0x10000 + ((@as(u21, u) - 0xD800) << 10) + (src[i + 1] - 0xDC00);
+            i += 2;
+        } else {
+            if (u < 0xD800 or u > 0xDFFF) cp = u;
+            i += 1;
+        }
+        // A 4-byte sequence always comes from 2 units (6 bytes reserved).
+        o += std.unicode.utf8Encode(cp, out[o..]) catch 0;
+    }
+    return gpa.realloc(out, o) catch {
+        gpa.free(out);
+        return null;
+    };
+}
+
+test "utf16ToUtf8Lossy: pairs, lone surrogates, and a failed shrink frees" {
+    const gpa = std.testing.allocator;
+    const text = [_]u16{ 'a', 0xD83D, 0xDE00, 0xDC00, 0xE9 };
+    const s = utf16ToUtf8Lossy(gpa, &text).?;
+    defer gpa.free(s);
+    try std.testing.expectEqualStrings("a\u{1F600}\u{FFFD}\u{E9}", s);
+    // The shrink (remap, then the fresh allocation it falls back to) fails:
+    // null, and std.testing.allocator reports the buffer if it leaked or
+    // was freed with the wrong length.
+    var failing = std.testing.FailingAllocator.init(gpa, .{ .fail_index = 1, .resize_fail_index = 0 });
+    try std.testing.expect(utf16ToUtf8Lossy(failing.allocator(), &text) == null);
+    try std.testing.expect(failing.has_induced_failure);
+    // The first allocation fails: null too.
+    var first = std.testing.FailingAllocator.init(gpa, .{ .fail_index = 0 });
+    try std.testing.expect(utf16ToUtf8Lossy(first.allocator(), &text) == null);
+}
 
 fn mousePos(lp: LPARAM) [2]f32 {
     return .{ @floatFromInt(USER.getXLParam(lp)), @floatFromInt(USER.getYLParam(lp)) };
