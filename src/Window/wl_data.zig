@@ -4,8 +4,8 @@
 //! LOCAL SHIM: ../Wayland does not bind these interfaces yet. Written the
 //! same way as the package's own protocol files (interface tables checked
 //! at compile time, typed opaque proxies) on its public CLIENT helpers, so
-//! it can move into ../Wayland's wayland_protocol.zig unchanged. Listed for
-//! the owner in CHANGES-portal-client.md.
+//! it can move into ../Wayland's wayland_protocol.zig unchanged; remove it
+//! here once the Wayland package has these interfaces.
 
 const W = @import("Wayland");
 const c = W.CLIENT;

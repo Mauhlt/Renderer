@@ -1,8 +1,8 @@
 //! Terminal cell width of a Unicode code point: 0, 1 or 2.
 //!
-//! The one table shared by every user of the Font module, so a terminal
-//! emulator (Portal's server) and its viewers (native and browser) agree
-//! about which cells a wide character covers.
+//! The one table shared by every user of the Font module, so a program
+//! that lays out a cell grid (a terminal emulator, say) and every program
+//! that draws it agree about which cells a wide character covers.
 //!
 //! Deliberately small: two sorted range tables searched with binary search.
 //! Wide = East Asian Wide/Fullwidth plus the common emoji presentation

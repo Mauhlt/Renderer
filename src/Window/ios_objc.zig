@@ -6,8 +6,10 @@
 //! always opens AppKit, which does not exist on iOS, and its symbol table
 //! is private, so its message-sending functions cannot run on an iPhone.
 //! This file reuses MacOS's types and its comptime `MsgSendFn` signature
-//! builder and supplies only the iOS-side symbol binding (see
-//! CHANGES-ios.md, "Gaps in ../MacOS"). An iOS app links libobjc anyway
+//! builder and supplies only the iOS-side symbol binding. If the MacOS
+//! package gains an iOS load path (UIKit instead of AppKit, a public
+//! symbol table, class methods, msgSendSuper, global blocks), both
+//! backends can share one runtime layer. An iOS app links libobjc anyway
 //! (`-lobjc`, with the iOS SDK), so the externs resolve at link time on the
 //! Mac; on other hosts they compile into objects only.
 

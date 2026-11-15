@@ -105,7 +105,7 @@ pub fn build(b: *std.Build) !void {
     }
     // iOS: an object only. Linking needs the iOS SDK (libSystem, libobjc,
     // UIKit), which only a Mac has; the externs in ios.zig / ios_objc.zig
-    // resolve there (see CHANGES-ios.md). Compiling still analyses every
+    // resolve there. Compiling still analyses every
     // backend method (checkInterface) and the iOS extras.
     const ios_target = b.resolveTargetQuery(.{ .cpu_arch = .aarch64, .os_tag = .ios });
     const ios_check = b.addObject(.{

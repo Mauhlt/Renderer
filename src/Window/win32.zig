@@ -29,7 +29,7 @@ const LPARAM = T.LPARAM;
 const LRESULT = T.LRESULT;
 
 // --- Not in ../Windows yet (kernel32 global memory, for the clipboard).
-// Listed for the owner in CHANGES-portal-client.md; remove once KERNEL has them.
+// Remove these once the Windows package's KERNEL binds them.
 extern "kernel32" fn GlobalAlloc(flags: u32, bytes: usize) callconv(.winapi) T.HANDLE;
 extern "kernel32" fn GlobalLock(mem: T.HANDLE) callconv(.winapi) ?*anyopaque;
 extern "kernel32" fn GlobalUnlock(mem: T.HANDLE) callconv(.winapi) T.BOOL;

@@ -6,8 +6,8 @@
 //! reaches std.Io.Threaded, which does not compile for iOS in Zig
 //! 0.18.0-dev.4 (Threaded.getDevNullFd reads `null_file.fd`, a field its
 //! iOS NullFile lacks). Real iOS apps build against a copy of the Zig lib
-//! with that one line fixed (Portal's `zig build ios` prepares it; see
-//! CHANGES-ios.md), so they keep the default panic handler.
+//! with that one line fixed (the app's own iOS build prepares it), so they
+//! keep the default panic handler.
 
 const std = @import("std");
 

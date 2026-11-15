@@ -41,8 +41,8 @@
 //! Text input: a UITextView placed over the UI's input slot
 //! (showTextInput), so the system keyboard, autocorrect and dictation
 //! work; changes and Return arrive as `.text_input` events and the text is
-//! read with textInputText. Smart quotes/dashes and autocapitalisation are
-//! off (the text goes to a terminal).
+//! read with textInputText. The keyboard's behaviour (smart punctuation,
+//! capitals, appearance, Return key) is TextField.traits.
 //!
 //! STATUS: compile-checked by cross-compilation (aarch64-ios objects) only;
 //! links and runs only with the iOS SDK on a Mac (frameworks UIKit,
@@ -139,6 +139,8 @@ const State = struct {
     want_field: root.TextField = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
     want_text_gen: u64 = 0,
     applied_text_gen: u64 = 0,
+    /// The traits last set on the text view (main thread only).
+    applied_traits: ?root.TextTraits = null,
     text_buf: [max_text]u8 = undefined,
     text_len: usize = 0,
     ui_posted: std.atomic.Value(bool) = .init(false),
@@ -522,6 +524,10 @@ fn applyUi(_: ?*anyopaque) callconv(.c) void {
     const pt: CGFloat = if (field.font_px > 0) @as(CGFloat, field.font_px) / k else 17;
     const font = msgSend(?*Object, objc.getClass("UIFont"), sel("monospacedSystemFontOfSize:weight:"), .{ pt, @as(CGFloat, 0) });
     msgSend(void, tv, sel("setFont:"), .{font});
+    if (state.applied_traits == null or !std.meta.eql(state.applied_traits.?, field.traits)) {
+        state.applied_traits = field.traits;
+        applyTraits(tv, field.traits);
+    }
     if (gen != state.applied_text_gen) {
         state.applied_text_gen = gen;
         const str = objc.newString(tmp[0..n]);
@@ -538,16 +544,22 @@ fn makeTextView(view: *Object) ?*Object {
     const del = msgSend(?*Object, textDelegateClass(), sel("new"), .{});
     state.text_delegate = del;
     msgSend(void, tv, sel("setDelegate:"), .{del});
-    // Terminal input: no smart punctuation, no automatic capitals.
-    msgSend(void, tv, sel("setSmartQuotesType:"), .{@as(objc.NSInteger, 1)}); // UITextSmartQuotesTypeNo
-    msgSend(void, tv, sel("setSmartDashesType:"), .{@as(objc.NSInteger, 1)}); // UITextSmartDashesTypeNo
-    msgSend(void, tv, sel("setSmartInsertDeleteType:"), .{@as(objc.NSInteger, 1)});
-    msgSend(void, tv, sel("setAutocapitalizationType:"), .{@as(objc.NSInteger, 0)}); // None
-    msgSend(void, tv, sel("setKeyboardAppearance:"), .{@as(objc.NSInteger, 1)}); // Dark
-    msgSend(void, tv, sel("setReturnKeyType:"), .{@as(objc.NSInteger, 7)}); // UIReturnKeySend
     msgSend(void, view, sel("addSubview:"), .{tv});
     state.text_view = tv;
     return tv;
+}
+
+/// Sets the text view's input traits (UITextInputTraits). The enums carry
+/// UIKit's raw values. Called when they change; a keyboard that is already
+/// up picks the new ones up on reloadInputViews.
+fn applyTraits(tv: *Object, t: root.TextTraits) void {
+    msgSend(void, tv, sel("setSmartQuotesType:"), .{@as(objc.NSInteger, @intFromEnum(t.smart_quotes))});
+    msgSend(void, tv, sel("setSmartDashesType:"), .{@as(objc.NSInteger, @intFromEnum(t.smart_dashes))});
+    msgSend(void, tv, sel("setSmartInsertDeleteType:"), .{@as(objc.NSInteger, @intFromEnum(t.smart_insert_delete))});
+    msgSend(void, tv, sel("setAutocapitalizationType:"), .{@as(objc.NSInteger, @intFromEnum(t.capitalization))});
+    msgSend(void, tv, sel("setKeyboardAppearance:"), .{@as(objc.NSInteger, @intFromEnum(t.keyboard_appearance))});
+    msgSend(void, tv, sel("setReturnKeyType:"), .{@as(objc.NSInteger, @intFromEnum(t.return_key))});
+    if (msgSend(BOOL, tv, sel("isFirstResponder"), .{}) == objc.YES) msgSend(void, tv, sel("reloadInputViews"), .{});
 }
 
 fn makeCover(window: *Object) void {

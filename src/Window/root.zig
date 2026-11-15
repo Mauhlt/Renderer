@@ -211,6 +211,32 @@ pub const TextField = struct {
     /// Raise the keyboard now (the UI moved its focus here). Otherwise the
     /// keyboard comes up when the user taps the field.
     focus: bool = false,
+    /// How the system keyboard treats the text (iOS today; others ignore
+    /// it). The defaults are the platform's own.
+    traits: TextTraits = .{},
+};
+
+/// Input traits of the native text field. Each enum's values are UIKit's
+/// raw values; `.default` leaves the platform's choice.
+pub const TextTraits = struct {
+    pub const Toggle = enum(i64) { default = 0, off = 1, on = 2 };
+    pub const Capitalization = enum(i64) { none = 0, words = 1, sentences = 2, all = 3 };
+    pub const Appearance = enum(i64) { default = 0, dark = 1, light = 2 };
+    pub const ReturnKey = enum(i64) { default = 0, go = 1, next = 4, search = 6, send = 7, done = 9, @"continue" = 11 };
+
+    /// Curly quotes for straight ones (UITextSmartQuotesType).
+    smart_quotes: Toggle = .default,
+    /// An em dash for "--" (UITextSmartDashesType).
+    smart_dashes: Toggle = .default,
+    /// Spaces added or removed around pasted and deleted words
+    /// (UITextSmartInsertDeleteType).
+    smart_insert_delete: Toggle = .default,
+    /// Automatic capitals (UITextAutocapitalizationType; UIKit's default
+    /// is sentences).
+    capitalization: Capitalization = .sentences,
+    keyboard_appearance: Appearance = .default,
+    /// The label of the keyboard's Return key (UIReturnKeyType).
+    return_key: ReturnKey = .default,
 };
 
 /// Platform behaviour for `runApp`. Only iOS acts on these today; every
