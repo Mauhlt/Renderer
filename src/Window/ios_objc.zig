@@ -104,9 +104,6 @@ pub fn msgSendSuper(comptime Ret: type, self: *Object, superclass: *Class, selec
     return @call(.auto, f, .{ &sup, selector } ++ args);
 }
 
-pub fn retain(obj: anytype) @TypeOf(obj) {
-    return @ptrCast(msgSend(?*Object, obj, sel("retain"), .{}));
-}
 pub fn release(obj: anytype) void {
     msgSend(void, obj, sel("release"), .{});
 }

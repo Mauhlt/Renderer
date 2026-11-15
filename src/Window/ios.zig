@@ -418,11 +418,6 @@ pub fn rootView() ?*Object {
     return state.view;
 }
 
-/// Main thread: the UIWindow.
-pub fn uiWindow() ?*Object {
-    return state.window;
-}
-
 /// Any thread: lifts the lock cover set by `lock_after_background` (call
 /// after the user authenticated). The cover stays while the app is
 /// inactive or the screen is captured.
@@ -445,11 +440,6 @@ pub fn lock() void {
             updateCover();
         }
     }.f);
-}
-
-/// Main thread: true while the lock cover is up.
-pub fn isLocked() bool {
-    return state.locked;
 }
 
 /// Sets what lifts the lock (`lock_after_background`, `start_locked`,
@@ -1023,10 +1013,8 @@ fn textDelegateClass() *Class {
 comptime {
     // Analyse the iOS-only extras in compile checks too.
     _ = &rootView;
-    _ = &uiWindow;
     _ = &unlock;
     _ = &lock;
-    _ = &isLocked;
     _ = &postEvent;
     _ = &setUnlockHandler;
     _ = &setLockMessage;

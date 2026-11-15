@@ -28,20 +28,16 @@ pub fn build(b: *std.Build) !void {
     });
     font_step.dependOn(&font_wasm.step);
 
-    // Reusable library module "Renderer" (src/root.zig): Instanced2D plus
-    // re-exports of the Vulkan bindings and the Font module. Needs only the
-    // Vulkan package and works for any target. It ships no shaders: the app
-    // passes its own SPIR-V to Instanced2D.init (its "Shader contract"),
-    // compiled from Zig with `addShader` below.
+    // Reusable library module "Renderer" (src/root.zig): Instanced2D. Needs
+    // only the Vulkan package and works for any target. It ships no
+    // shaders: the app passes its own SPIR-V to Instanced2D.init (its
+    // "Shader contract"), compiled from Zig with `addShader` below.
     const vulkan_lib = b.dependency("Vulkan", .{ .target = target, .optimize = optimize }).module("Vulkan");
     const lib_mod = b.addModule("Renderer", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{
-            .{ .name = "Vulkan", .module = vulkan_lib },
-            .{ .name = "Font", .module = font_mod },
-        },
+        .imports = &.{.{ .name = "Vulkan", .module = vulkan_lib }},
     });
     const lib_tests = b.addTest(.{ .root_module = lib_mod });
     const lib_step = b.step("test-lib", "Test the Renderer library module (and the Font module)");
@@ -221,15 +217,11 @@ fn iosObjcModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.
 /// A Renderer + Window module pair for `t`, for compile-only checks.
 fn windowCheckModule(b: *std.Build, t: std.Build.ResolvedTarget) *std.Build.Module {
     const vulkan = b.dependency("Vulkan", .{ .target = t, .optimize = .Debug }).module("Vulkan");
-    const font = b.createModule(.{ .root_source_file = b.path("src/Font/root.zig"), .target = t, .optimize = .Debug });
     const renderer = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = t,
         .optimize = .Debug,
-        .imports = &.{
-            .{ .name = "Vulkan", .module = vulkan },
-            .{ .name = "Font", .module = font },
-        },
+        .imports = &.{.{ .name = "Vulkan", .module = vulkan }},
     });
     const window = b.createModule(.{ .root_source_file = b.path("src/Window/root.zig"), .target = t, .optimize = .Debug });
     addWindowImports(b, window, t, .Debug, renderer, null);
