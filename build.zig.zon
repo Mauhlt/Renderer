@@ -17,8 +17,8 @@
         },
         // Window module backends (src/Window): Wayland on Linux, AppKit on macOS.
         .Wayland = .{
-            .url = "git+https://github.com/Mauhlt/Wayland#4aa975f443ba59d5989cb62bb23a0f8cb8e202fd",
-            .hash = "Wayland-0.0.0-Sp1drpdSAQAkRXnMMtw44T1zDT4p30NrYyP_1Mi7l6mb",
+            .url = "git+https://github.com/Mauhlt/Wayland#8e0740dd1b2884d50febe861564310419a3dec88",
+            .hash = "Wayland-0.0.0-Sp1driqDAQCrv4mozkcC_tBzgL23p0fkgLoYlmWgeDKP",
         },
         .MacOS = .{
             .url = "git+https://github.com/Mauhlt/MacOS#e1d93c290429457e532db7fa2ecec7c0411421f0",
