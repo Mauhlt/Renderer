@@ -2,8 +2,9 @@
 //! (../Wayland: libwayland-client and libxkbcommon via dlopen). No X11.
 //!
 //!   window      xdg-shell toplevel; server-side decorations through
-//!               xdg-decoration when the compositor offers it (GNOME does
-//!               not: there the window has no title bar)
+//!               xdg-decoration when the compositor offers it (GNOME and
+//!               Weston, so WSLg, do not: there the window has no title
+//!               bar)
 //!   scale       wl_surface.preferred_buffer_scale (v6) or the largest
 //!               wl_output scale among the outputs the surface is on;
 //!               integer scales only (no wp_fractional_scale yet)
@@ -11,7 +12,8 @@
 //!               timerfd (a deadline in the same poll, not a tick)
 //!   pointer     wl_pointer: buttons, drags, wheel (value120 / discrete /
 //!               continuous axis)
-//!   clipboard   wl_data_device (local shim in wl_data.zig)
+//!   clipboard   wl_data_device (local shim in wl_data.zig), made once
+//!               both the seat and the manager are bound, whenever
 //!   wake        an eventfd in the same poll as the display socket
 //!
 //! Event driven: waitEvents polls the display fd, the wake eventfd and
@@ -177,16 +179,8 @@ pub const Window = struct {
         tl.setListener(*Window, onToplevel, self);
         var buf: [512]u8 = undefined;
         tl.setTitle(root.titleZ(title, &buf).ptr);
-        if (self.deco_manager) |dm| {
-            const d = try dm.getToplevelDecoration(tl);
-            self.decoration = d;
-            d.setMode(.server_side);
-        }
-        if (self.seat) |seat| if (self.ddm) |m| {
-            const dd = try m.getDataDevice(seat);
-            self.data_device = dd;
-            dd.setListener(*Window, onDataDevice, self);
-        };
+        self.requestDecoration();
+        self.ensureDataDevice();
         surface.commit();
         // The first configure says the size; the window maps on the first
         // presented frame. dispatch() blocks on the socket.
@@ -423,11 +417,18 @@ pub const Window = struct {
                     if (self.seat == null) {
                         self.seat = reg.bind(g.name, WL.Seat, g.version) catch null;
                         if (self.seat) |s| s.setListener(*Window, onSeat, self);
+                        self.ensureDataDevice();
                     }
                 } else if (eql(name, "zxdg_decoration_manager_v1")) {
-                    if (self.deco_manager == null) self.deco_manager = reg.bind(g.name, DECOR.Manager, g.version) catch null;
+                    if (self.deco_manager == null) {
+                        self.deco_manager = reg.bind(g.name, DECOR.Manager, g.version) catch null;
+                        self.requestDecoration();
+                    }
                 } else if (eql(name, "wl_data_device_manager")) {
-                    if (self.ddm == null) self.ddm = reg.bind(g.name, data.DataDeviceManager, g.version) catch null;
+                    if (self.ddm == null) {
+                        self.ddm = reg.bind(g.name, data.DataDeviceManager, g.version) catch null;
+                        self.ensureDataDevice();
+                    }
                 } else if (eql(name, "wl_output")) {
                     for (&self.outputs) |*slot| if (slot.output == null) {
                         const out = reg.bind(g.name, WL.Output, g.version) catch return;
@@ -445,6 +446,31 @@ pub const Window = struct {
                 };
             },
         }
+    }
+
+    /// The clipboard needs a data device, made from the seat and the data
+    /// device manager once both are bound, whichever comes last: a seat
+    /// can be announced after the window exists (WSLg starting cold adds
+    /// wl_seat seconds later, when its RDP client connects).
+    fn ensureDataDevice(self: *Window) void {
+        if (self.data_device != null) return;
+        const seat = self.seat orelse return;
+        const m = self.ddm orelse return;
+        const dd = m.getDataDevice(seat) catch return;
+        self.data_device = dd;
+        dd.setListener(*Window, onDataDevice, self);
+    }
+
+    /// Server-side decorations (title bar, frame, close) when the
+    /// compositor offers xdg-decoration (KDE, Sway, wlroots). GNOME and
+    /// Weston (WSLg) do not: there the window has none.
+    fn requestDecoration(self: *Window) void {
+        if (self.decoration != null) return;
+        const tl = self.toplevel orelse return;
+        const dm = self.deco_manager orelse return;
+        const d = dm.getToplevelDecoration(tl) catch return;
+        self.decoration = d;
+        d.setMode(.server_side);
     }
 
     fn onPing(wm: *XDG.WmBase, ev: XDG.WmBase.Event, _: void) void {
