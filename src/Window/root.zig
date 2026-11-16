@@ -40,7 +40,9 @@
 //!   insets() Insets                 pixels at the edges the UI must keep
 //!                                   clear: safe area (notch, home
 //!                                   indicator) and the on-screen keyboard;
-//!                                   all zero on desktops
+//!                                   on Wayland the strip under the
+//!                                   backend's own title bar (top);
+//!                                   otherwise zero on desktops
 //!   showTextInput(TextField) bool   place the OS's own text field over the
 //!                                   UI's input slot (iOS: a UITextView, so
 //!                                   the keyboard, autocorrect and dictation
@@ -61,6 +63,15 @@
 //! is the pointer: mouse_down where it lands, mouse_move while it moves,
 //! mouse_up where it lifts; the app decides what a drag means (scroll,
 //! swipe).
+//!
+//! Wayland extras (Linux only, outside the common interface): where the
+//! compositor draws no title bar, the backend draws one itself (wl_csd.zig);
+//! `setDecorationColors(DecorationColors)` recolours it, `startMove()` and
+//! `startResize(ResizeEdge)` let an app's own top bar or grip move or
+//! resize the window from a mouse_down, and `clientDecorations()` says
+//! whether the backend's bar is shown. Where the compositor shows no
+//! sub-surfaces (WSLg) `titleBar()` returns the bar the app must draw in
+//! its inset strip (the backend still handles that strip's input).
 //!
 //! Backends: Win32 (../Windows bindings), Wayland (../Wayland; no X11),
 //! macOS AppKit (../MacOS), iOS UIKit (ios.zig; Objective-C runtime types
@@ -183,6 +194,44 @@ pub const Event = union(enum) {
 
 /// What a media button asked for.
 pub const Media = enum { play_pause, play, pause, stop };
+
+/// An edge or corner of the window, for an interactive resize
+/// (Wayland: `Window.startResize`).
+pub const ResizeEdge = enum { top, bottom, left, right, top_left, top_right, bottom_left, bottom_right };
+
+/// Colours of the title bar the Wayland backend draws itself where the
+/// compositor draws none (GNOME, Weston / WSLg); `Window.setDecorationColors`
+/// replaces them. Neutral by default.
+pub const DecorationColors = struct {
+    /// The bar while the window has the focus, and while it has not.
+    bar: [3]u8 = .{ 0x2B, 0x2D, 0x31 },
+    bar_inactive: [3]u8 = .{ 0x3A, 0x3C, 0x41 },
+    /// The title text, focused and not.
+    title: [3]u8 = .{ 0xE4, 0xE6, 0xEA },
+    title_inactive: [3]u8 = .{ 0x9A, 0x9D, 0xA3 },
+    /// The close button under the pointer: its background and its cross.
+    close_hover: [3]u8 = .{ 0xC4, 0x2B, 0x1C },
+    close_hover_fg: [3]u8 = .{ 0xFF, 0xFF, 0xFF },
+};
+
+/// The title bar an app must draw itself (Wayland `Window.titleBar()`):
+/// where the compositor shows no sub-surfaces (WSLg) the backend cannot
+/// show its own, but still handles the strip's input (move, close,
+/// double-click maximise, resize at the top edge). Draw it over the top
+/// `height` pixels (= `insets().top`): the bar colour, the title from
+/// the left, and a cross centred in the last `close_w` pixels (on
+/// `colors.close_hover` while `close_hover`). Framebuffer pixels.
+pub const TitleBar = struct {
+    height: f32,
+    close_w: f32,
+    /// Space before the title, and the title's font size.
+    title_pad: f32,
+    title_em: f32,
+    title: []const u8,
+    active: bool,
+    close_hover: bool,
+    colors: DecorationColors,
+};
 
 /// Pixels (framebuffer) at each edge that the UI should keep clear.
 /// `keyboard` is the height covered by the on-screen keyboard, measured
@@ -485,6 +534,8 @@ test "minTimeout: negative is no timeout" {
 
 test {
     if (builtin.os.tag == .windows) _ = @import("win32.zig");
+    // The Wayland title bar's layout and hit testing (no Wayland calls).
+    _ = @import("wl_csd.zig");
 }
 
 test "utf8Prefix never splits a code point" {

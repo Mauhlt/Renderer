@@ -78,7 +78,7 @@ pub fn build(b: *std.Build) !void {
         .link_libc = true,
     });
     if (target.result.os.tag == .ios) ios_objc_mod.addImport("MacOS", b.dependency("MacOS", .{ .target = target, .optimize = optimize }).module("MacOS"));
-    addWindowImports(b, window_mod, target, optimize, lib_mod, ios_objc_mod);
+    addWindowImports(b, window_mod, target, optimize, lib_mod, ios_objc_mod, font_mod);
     const window_tests = b.addTest(.{ .root_module = window_mod });
     const window_step = b.step("test-window", "Test the Window module and compile it for Windows, Linux (Wayland) and macOS");
     window_step.dependOn(&b.addRunArtifact(window_tests).step);
@@ -179,7 +179,10 @@ pub fn addShader(b: *std.Build, name: []const u8, root_source_file: std.Build.La
 }
 
 /// Imports for module "Window": "Renderer" (for Instanced2D.SurfaceSource)
-/// and the target OS's bindings package.
+/// and the target OS's bindings package; on Linux also "Font" (the title
+/// bar the Wayland backend draws where the compositor draws none). `font`
+/// is the package's own Font module, so an app that imports both Window
+/// and Font compiles one instance of it.
 fn addWindowImports(
     b: *std.Build,
     mod: *std.Build.Module,
@@ -187,6 +190,7 @@ fn addWindowImports(
     optimize: std.builtin.OptimizeMode,
     renderer: *std.Build.Module,
     ios_objc: ?*std.Build.Module,
+    font: *std.Build.Module,
 ) void {
     mod.addImport("Renderer", renderer);
     switch (target.result.os.tag) {
@@ -194,7 +198,10 @@ fn addWindowImports(
         // iOS reuses the Objective-C runtime types from ../MacOS (ios_objc.zig).
         .macos => mod.addImport("MacOS", b.dependency("MacOS", .{ .target = target, .optimize = optimize }).module("MacOS")),
         .ios => mod.addImport("IosObjC", ios_objc orelse iosObjcModule(b, target, optimize)),
-        else => mod.addImport("Wayland", b.dependency("Wayland", .{ .target = target, .optimize = optimize }).module("Wayland")),
+        else => {
+            mod.addImport("Wayland", b.dependency("Wayland", .{ .target = target, .optimize = optimize }).module("Wayland"));
+            mod.addImport("Font", font);
+        },
     }
     // dlopen (Wayland, Vulkan loader, Objective-C runtime) needs libc off Windows.
     if (target.result.os.tag != .windows) mod.link_libc = true;
@@ -224,6 +231,7 @@ fn windowCheckModule(b: *std.Build, t: std.Build.ResolvedTarget) *std.Build.Modu
         .imports = &.{.{ .name = "Vulkan", .module = vulkan }},
     });
     const window = b.createModule(.{ .root_source_file = b.path("src/Window/root.zig"), .target = t, .optimize = .Debug });
-    addWindowImports(b, window, t, .Debug, renderer, null);
+    const font = b.createModule(.{ .root_source_file = b.path("src/Font/root.zig"), .target = t, .optimize = .Debug });
+    addWindowImports(b, window, t, .Debug, renderer, null, font);
     return window;
 }

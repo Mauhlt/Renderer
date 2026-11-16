@@ -2,9 +2,19 @@
 //! (../Wayland: libwayland-client and libxkbcommon via dlopen). No X11.
 //!
 //!   window      xdg-shell toplevel; server-side decorations through
-//!               xdg-decoration when the compositor offers it (GNOME and
-//!               Weston, so WSLg, do not: there the window has no title
-//!               bar)
+//!               xdg-decoration when the compositor offers it. Where it
+//!               does not (GNOME, Weston and so WSLg) or answers
+//!               client_side, the backend draws its own title bar
+//!               (wl_csd.zig, wl_bar.zig): title, close button, move,
+//!               double-click maximise, resize at the edges. It covers the
+//!               content's top strip (insets().top). WSLg's RAIL windows
+//!               show only the main surface (no sub-surfaces): there the
+//!               app draws the bar from titleBar() and the backend still
+//!               handles the strip's input
+//!   cursor      cursor-shape-v1 when offered, else the Xcursor theme
+//!               through libwayland-cursor (dlopen; $XCURSOR_THEME,
+//!               $XCURSOR_SIZE); without either the compositor's cursor
+//!               stays (no image is set)
 //!   scale       wl_surface.preferred_buffer_scale (v6) or the largest
 //!               wl_output scale among the outputs the surface is on;
 //!               integer scales only (no wp_fractional_scale yet)
@@ -35,7 +45,11 @@ const WL = Wl.WL;
 const XDG = Wl.XDG;
 const DECOR = Wl.DECOR;
 const XKB = Wl.XKB;
+const CURSOR = Wl.CURSOR;
+const SHAPE = Wl.CURSOR_SHAPE;
 const data = @import("wl_data.zig");
+const csd = @import("wl_csd.zig");
+const Bar = @import("wl_bar.zig").Bar;
 const root = @import("root.zig");
 
 const Event = root.Event;
@@ -51,6 +65,9 @@ const max_sends = 4;
 /// the caller's thread) and for each paste of ours (served from the poll
 /// loop, never blocking it).
 const paste_timeout_ms = 2000;
+/// Two presses on our title bar this close (wl_pointer time) are a
+/// double-click: maximise or restore.
+const double_click_ms = 400;
 
 /// One paste of our selection in progress: the rest of the text goes to
 /// the reader's fd (non-blocking) whenever poll says it is writable, until
@@ -90,7 +107,49 @@ pub const Window = struct {
     seat: ?*WL.Seat = null,
     deco_manager: ?*DECOR.Manager = null,
     ddm: ?*data.DataDeviceManager = null,
+    shm: ?*WL.Shm = null,
+    subcompositor: ?*WL.Subcompositor = null,
+    shape_manager: ?*SHAPE.Manager = null,
     outputs: [max_outputs]OutputSlot = @splat(.{}),
+
+    /// Our own title bar as a sub-surface (null: the compositor decorates,
+    /// the app draws it, or it could not be made).
+    bar: ?*Bar = null,
+    /// The app draws the bar (titleBar()): the compositor shows no
+    /// sub-surfaces (WSLg). Its input is still ours.
+    app_bar: bool = false,
+    /// WSLg's RDP RAIL shell is present: its windows show the main
+    /// surface only, never sub-surfaces.
+    rail: bool = false,
+    /// The bar's input: the part under the pointer, a press on the close
+    /// button (it closes on release over it), the last press on the title
+    /// (wl_pointer time, ms) for double-clicks.
+    bar_hover: csd.Part = .none,
+    close_armed: bool = false,
+    last_click_ms: ?u32 = null,
+    colors: root.DecorationColors = .{},
+    title_buf: [256]u8 = undefined,
+    title_len: usize = 0,
+    maximized: bool = false,
+    activated: bool = true,
+    pending_maximized: bool = false,
+    pending_activated: bool = true,
+
+    /// Which surface the pointer is on.
+    ptr_on: enum { none, content, bar } = .none,
+    /// The latest wl_pointer.enter serial (cursor requests) and button
+    /// press serial (move / resize requests).
+    enter_serial: u32 = 0,
+    press_serial: u32 = 0,
+    /// The cursor shown (null: set it at the next chance).
+    cursor_now: ?csd.Cursor = null,
+    shape_device: ?*SHAPE.Device = null,
+    cursor_theme: ?*CURSOR.Theme = null,
+    cursor_theme_scale: i32 = 0,
+    cursor_surface: ?*WL.Surface = null,
+    /// libwayland-cursor could not be loaded or has no theme: no cursor
+    /// images are set.
+    cursor_unavailable: bool = false,
 
     surface: ?*WL.Surface = null,
     xdg_surface: ?*XDG.Surface = null,
@@ -177,9 +236,12 @@ pub const Window = struct {
         const tl = try xs.getToplevel();
         self.toplevel = tl;
         tl.setListener(*Window, onToplevel, self);
-        var buf: [512]u8 = undefined;
-        tl.setTitle(root.titleZ(title, &buf).ptr);
+        self.storeTitle(title);
+        tl.setTitle(self.titleZ().ptr);
         self.requestDecoration();
+        // No xdg-decoration: our own bar (an answer of client_side from
+        // the decoration object enables it too, onDecoration).
+        if (self.decoration == null) self.enableBar();
         self.ensureDataDevice();
         surface.commit();
         // The first configure says the size; the window maps on the first
@@ -196,6 +258,18 @@ pub const Window = struct {
 
     fn destroyObjects(self: *Window) void {
         self.stopRepeat();
+        if (self.bar) |b| b.destroy();
+        self.bar = null;
+        if (self.shape_device) |d| d.destroy();
+        self.shape_device = null;
+        if (self.cursor_surface) |s| s.destroy();
+        self.cursor_surface = null;
+        if (self.cursor_theme) |t| t.destroy();
+        self.cursor_theme = null;
+        if (self.shape_manager) |m| m.destroy();
+        self.shape_manager = null;
+        if (self.subcompositor) |s| s.destroy();
+        self.subcompositor = null;
         for (&self.sends) |*s| self.endSend(s);
         if (self.own_source) |s| s.destroy();
         self.own_source = null;
@@ -222,6 +296,8 @@ pub const Window = struct {
             o.output = null;
         };
         if (self.ddm) |m| m.destroy();
+        if (self.shm) |s| s.release();
+        self.shm = null;
         if (self.deco_manager) |m| m.destroy();
         if (self.seat) |s| s.release();
         if (self.wm_base) |w| w.destroy();
@@ -301,9 +377,130 @@ pub const Window = struct {
     }
 
     pub fn setTitle(self: *Window, title: []const u8) void {
-        var buf: [512]u8 = undefined;
-        if (self.toplevel) |t| t.setTitle(root.titleZ(title, &buf).ptr);
+        self.storeTitle(title);
+        if (self.toplevel) |t| t.setTitle(self.titleZ().ptr);
+        if (self.bar) |b| {
+            b.invalidate();
+            self.redrawBar();
+        }
         _ = self.display.flush() catch {};
+    }
+
+    fn storeTitle(self: *Window, title: []const u8) void {
+        self.title_len = root.titleZ(title, &self.title_buf).len;
+    }
+
+    fn titleZ(self: *const Window) [:0]const u8 {
+        return self.title_buf[0..self.title_len :0];
+    }
+
+    // ----------------------------------------------- Wayland-only extras
+
+    /// Recolours the title bar the backend draws (where it draws one).
+    pub fn setDecorationColors(self: *Window, colors: root.DecorationColors) void {
+        self.colors = colors;
+        if (self.bar) |b| {
+            b.invalidate();
+            self.redrawBar();
+            _ = self.display.flush() catch {};
+        }
+        if (self.app_bar) self.queue.push(.expose);
+    }
+
+    /// True while there is a client-side title bar (the compositor draws
+    /// none): ours, or the app's (titleBar()).
+    pub fn clientDecorations(self: *const Window) bool {
+        return self.bar != null or self.app_bar;
+    }
+
+    /// The title bar the app must draw in its inset strip, where the
+    /// compositor shows no sub-surfaces (WSLg); null elsewhere. A change
+    /// (focus, the close button's hover, title, colours, scale) comes with
+    /// an .expose or .insets event.
+    pub fn titleBar(self: *const Window) ?root.TitleBar {
+        if (!self.app_bar) return null;
+        const s: f32 = @floatFromInt(self.buffer_scale);
+        return .{
+            .height = @as(f32, @floatFromInt(csd.bar_h)) * s,
+            .close_w = @as(f32, @floatFromInt(csd.close_w)) * s,
+            .title_pad = @as(f32, @floatFromInt(csd.title_pad)) * s,
+            .title_em = csd.title_em * s,
+            .title = self.title_buf[0..self.title_len],
+            .active = self.activated,
+            .close_hover = self.bar_hover == .close,
+            .colors = self.colors,
+        };
+    }
+
+    /// Starts an interactive move, from the latest mouse_down (call it
+    /// while handling that event, e.g. for an app's own top bar). The
+    /// compositor then has the pointer until the button is released: no
+    /// mouse_move or mouse_up follows. False if there is no seat.
+    pub fn startMove(self: *Window) bool {
+        const seat = self.seat orelse return false;
+        const tl = self.toplevel orelse return false;
+        tl.move(seat, self.press_serial);
+        self.left_held = false;
+        _ = self.display.flush() catch {};
+        return true;
+    }
+
+    /// Starts an interactive resize from `edge`, like `startMove`.
+    pub fn startResize(self: *Window, edge: root.ResizeEdge) bool {
+        const seat = self.seat orelse return false;
+        const tl = self.toplevel orelse return false;
+        tl.resize(seat, self.press_serial, xdgEdge(edge));
+        self.left_held = false;
+        _ = self.display.flush() catch {};
+        return true;
+    }
+
+    // ---------------------------------------------------------- title bar
+
+    /// Shows our own title bar: a sub-surface (needs wl_shm and
+    /// wl_subcompositor; without them the window stays undecorated), or
+    /// under WSLg, whose RAIL windows show no sub-surfaces, one the app
+    /// draws (titleBar()).
+    fn enableBar(self: *Window) void {
+        if (self.clientDecorations()) return;
+        if (self.rail) {
+            self.app_bar = true;
+        } else {
+            const compositor = self.compositor orelse return;
+            const sc = self.subcompositor orelse return;
+            const shm = self.shm orelse return;
+            const surface = self.surface orelse return;
+            self.bar = Bar.create(self.gpa, compositor, sc, shm, surface) catch return;
+        }
+        // The app keeps the bar's strip clear (insets().top).
+        self.queue.push(.insets);
+        if (self.configured) self.redrawBar();
+    }
+
+    fn disableBar(self: *Window) void {
+        if (!self.clientDecorations()) return;
+        if (self.bar) |b| b.destroy();
+        self.bar = null;
+        self.app_bar = false;
+        if (self.ptr_on == .bar) self.ptr_on = .none;
+        self.bar_hover = .none;
+        self.queue.push(.insets);
+    }
+
+    /// Our bar shows the current state (the sub-surface is painted when it
+    /// changed; the app's is drawn on the .expose that follows).
+    fn redrawBar(self: *Window) void {
+        if (self.app_bar) return self.queue.push(.expose);
+        const b = self.bar orelse return;
+        const state: csd.State = .{ .active = self.activated, .close_hover = self.bar_hover == .close };
+        b.redraw(self.width, self.buffer_scale, state, self.title_buf[0..self.title_len], self.colors);
+    }
+
+    fn onDecoration(_: *DECOR.ToplevelDecoration, ev: DECOR.ToplevelDecoration.Event, self: *Window) void {
+        switch (ev.configure.mode) {
+            .client_side => self.enableBar(),
+            else => self.disableBar(),
+        }
     }
 
     /// Unmaps the toplevel (a null buffer). The next presented frame would
@@ -429,6 +626,17 @@ pub const Window = struct {
                         self.ddm = reg.bind(g.name, data.DataDeviceManager, g.version) catch null;
                         self.ensureDataDevice();
                     }
+                } else if (eql(name, "weston_rdprail_shell")) {
+                    self.rail = true;
+                } else if (eql(name, "wl_shm")) {
+                    if (self.shm == null) self.shm = reg.bind(g.name, WL.Shm, g.version) catch null;
+                } else if (eql(name, "wl_subcompositor")) {
+                    if (self.subcompositor == null) self.subcompositor = reg.bind(g.name, WL.Subcompositor, g.version) catch null;
+                } else if (eql(name, "wp_cursor_shape_manager_v1")) {
+                    if (self.shape_manager == null) {
+                        self.shape_manager = reg.bind(g.name, SHAPE.Manager, g.version) catch null;
+                        self.ensureShapeDevice();
+                    }
                 } else if (eql(name, "wl_output")) {
                     for (&self.outputs) |*slot| if (slot.output == null) {
                         const out = reg.bind(g.name, WL.Output, g.version) catch return;
@@ -463,13 +671,15 @@ pub const Window = struct {
 
     /// Server-side decorations (title bar, frame, close) when the
     /// compositor offers xdg-decoration (KDE, Sway, wlroots). GNOME and
-    /// Weston (WSLg) do not: there the window has none.
+    /// Weston (WSLg) do not: there our own bar is shown (enableBar), as
+    /// when the compositor answers client_side.
     fn requestDecoration(self: *Window) void {
         if (self.decoration != null) return;
         const tl = self.toplevel orelse return;
         const dm = self.deco_manager orelse return;
         const d = dm.getToplevelDecoration(tl) catch return;
         self.decoration = d;
+        d.setListener(*Window, onDecoration, self);
         d.setMode(.server_side);
     }
 
@@ -518,6 +728,12 @@ pub const Window = struct {
         self.queue.push(.{ .scale = @floatFromInt(s) });
         const fb = self.framebufferSize();
         self.queue.push(.{ .resize = .{ .width = fb[0], .height = fb[1] } });
+        // The bar (and so the inset, in pixels) and the cursor follow the
+        // new scale.
+        if (self.clientDecorations()) self.queue.push(.insets);
+        self.redrawBar();
+        self.cursor_now = null;
+        self.updatePointer();
     }
 
     fn onXdgSurface(xs: *XDG.Surface, ev: XDG.Surface.Event, self: *Window) void {
@@ -534,7 +750,10 @@ pub const Window = struct {
             const fb = self.framebufferSize();
             self.queue.push(.{ .resize = .{ .width = fb[0], .height = fb[1] } });
         }
+        self.maximized = self.pending_maximized;
+        self.activated = self.pending_activated;
         self.configured = true;
+        self.redrawBar();
         // Draw now: the compositor waits for a commit after the ack.
         self.queue.push(.expose);
     }
@@ -544,6 +763,8 @@ pub const Window = struct {
             .configure => |c| {
                 self.pending_width = c.width;
                 self.pending_height = c.height;
+                self.pending_maximized = c.states.maximized or c.states.fullscreen;
+                self.pending_activated = c.states.activated;
             },
             .close => self.queue.push(.close),
             else => {},
@@ -564,9 +785,13 @@ pub const Window = struct {
                 if (caps.pointer and self.pointer == null) {
                     self.pointer = seat.getPointer() catch null;
                     if (self.pointer) |p| p.setListener(*Window, onPointer, self);
+                    self.ensureShapeDevice();
                 } else if (!caps.pointer) if (self.pointer) |p| {
+                    if (self.shape_device) |d| d.destroy();
+                    self.shape_device = null;
                     p.release();
                     self.pointer = null;
+                    self.ptr_on = .none;
                 };
             },
             .name => {},
@@ -686,24 +911,180 @@ pub const Window = struct {
         return .{ @floatCast(self.ptr_x * s), @floatCast(self.ptr_y * s) };
     }
 
+    /// The pointer is on the title bar: our sub-surface, or the strip the
+    /// app draws it in (the content's top `csd.bar_h`).
+    fn onBar(self: *const Window) bool {
+        return switch (self.ptr_on) {
+            .none => false,
+            .bar => true,
+            .content => self.app_bar and self.ptr_y < csd.bar_h,
+        };
+    }
+
+    /// The resize grip under the pointer in the content (only with a
+    /// client-side bar: a compositor that decorates has its own border).
+    fn contentEdge(self: *const Window) ?root.ResizeEdge {
+        if (!self.clientDecorations() or self.ptr_on != .content or self.onBar()) return null;
+        return csd.hitContent(self.ptr_x, self.ptr_y, self.width, self.height, self.maximized);
+    }
+
+    /// What the pointer is over: the bar's hover (the close button lights
+    /// up) and the cursor.
+    fn updatePointer(self: *Window) void {
+        if (self.ptr_on == .none) return;
+        const on_bar = self.onBar();
+        const part: csd.Part = if (on_bar)
+            csd.hitBar(self.ptr_x, self.ptr_y, self.width, self.maximized)
+        else if (self.contentEdge()) |e| .{ .edge = e } else .none;
+        self.setBarHover(if (on_bar) part else .none);
+        self.setCursor(csd.cursorFor(part));
+    }
+
+    fn setBarHover(self: *Window, part: csd.Part) void {
+        if (self.bar_hover.eql(part)) return;
+        const was_close = self.bar_hover == .close;
+        self.bar_hover = part;
+        // Only the close button's look depends on the hover.
+        if (was_close != (part == .close)) self.redrawBar();
+    }
+
+    /// A button on the bar: close (on release over the button), move,
+    /// double-click maximise, resize from the top edge, the window menu.
+    fn barButton(self: *Window, b: anytype) void {
+        const part = csd.hitBar(self.ptr_x, self.ptr_y, self.width, self.maximized);
+        switch (b.state) {
+            .pressed => switch (b.button) {
+                WL.BTN_LEFT => switch (part) {
+                    .none => {},
+                    .close => self.close_armed = true,
+                    .edge => |e| _ = self.startResize(e),
+                    .title => {
+                        const double = if (self.last_click_ms) |t| b.time -% t <= double_click_ms else false;
+                        if (double) {
+                            self.last_click_ms = null;
+                            if (self.toplevel) |tl| if (self.maximized) tl.unsetMaximized() else tl.setMaximized();
+                        } else {
+                            self.last_click_ms = b.time;
+                            _ = self.startMove();
+                        }
+                    },
+                },
+                WL.BTN_RIGHT => if (part == .title) if (self.seat) |seat| if (self.toplevel) |tl| {
+                    // The bar sits at the window's origin: its coordinates
+                    // are the window's.
+                    tl.showWindowMenu(seat, b.serial, @intFromFloat(self.ptr_x), @intFromFloat(self.ptr_y));
+                },
+                else => {},
+            },
+            .released => if (b.button == WL.BTN_LEFT) {
+                if (self.close_armed and part == .close) self.queue.push(.close);
+                self.close_armed = false;
+            },
+            _ => {},
+        }
+        _ = self.display.flush() catch {};
+    }
+
+    // ------------------------------------------------------------- cursor
+
+    fn ensureShapeDevice(self: *Window) void {
+        if (self.shape_device != null) return;
+        const m = self.shape_manager orelse return;
+        const p = self.pointer orelse return;
+        self.shape_device = m.getPointer(p) catch null;
+    }
+
+    /// Shows `kind` (once per change; an enter resets it): through
+    /// cursor-shape-v1, else an image of the cursor theme.
+    fn setCursor(self: *Window, kind: csd.Cursor) void {
+        if (self.cursor_now == kind) return;
+        const p = self.pointer orelse return;
+        if (self.shape_device) |d| {
+            d.setShape(self.enter_serial, shapeOf(kind));
+            self.cursor_now = kind;
+            return;
+        }
+        const theme = self.cursorTheme() orelse return;
+        const cur = theme.getCursor(xcursorName(kind)) orelse theme.getCursor("left_ptr") orelse return;
+        if (cur.image_count == 0) return;
+        const img = cur.images[0];
+        const buf = img.buffer() orelse return;
+        const cs = self.cursor_surface orelse blk: {
+            const compositor = self.compositor orelse return;
+            const s = compositor.createSurface() catch return;
+            self.cursor_surface = s;
+            break :blk s;
+        };
+        const s = self.cursor_theme_scale;
+        if (Wl.CLIENT.version(cs) >= 3) cs.setBufferScale(s);
+        cs.attach(buf, 0, 0);
+        cs.damage(0, 0, std.math.maxInt(i32), std.math.maxInt(i32));
+        cs.commit();
+        p.setCursor(self.enter_serial, cs, @divTrunc(@as(i32, @intCast(img.hotspot_x)), s), @divTrunc(@as(i32, @intCast(img.hotspot_y)), s));
+        self.cursor_now = kind;
+    }
+
+    /// The Xcursor theme at the window's scale, loaded on first use and
+    /// again when the scale changes; null without libwayland-cursor.
+    fn cursorTheme(self: *Window) ?*CURSOR.Theme {
+        if (self.cursor_unavailable) return null;
+        const s = @max(1, self.buffer_scale);
+        if (self.cursor_theme) |t| {
+            if (self.cursor_theme_scale == s) return t;
+            t.destroy();
+            self.cursor_theme = null;
+        }
+        const shm = self.shm orelse return null;
+        CURSOR.load() catch {
+            self.cursor_unavailable = true;
+            return null;
+        };
+        const name: ?[*:0]const u8 = std.c.getenv("XCURSOR_THEME");
+        const size: i32 = if (std.c.getenv("XCURSOR_SIZE")) |z| std.fmt.parseInt(i32, std.mem.span(z), 10) catch 24 else 24;
+        const t = CURSOR.Theme.load(name, std.math.clamp(size, 8, 256) * s, shm) orelse {
+            self.cursor_unavailable = true;
+            return null;
+        };
+        self.cursor_theme = t;
+        self.cursor_theme_scale = s;
+        return t;
+    }
+
     fn onPointer(p: *WL.Pointer, ev: WL.Pointer.Event, self: *Window) void {
         switch (ev) {
             .enter => |e| {
                 self.serial = e.serial;
+                self.enter_serial = e.serial;
                 self.ptr_x = e.x.toFloat();
                 self.ptr_y = e.y.toFloat();
+                const bar_surface: ?*WL.Surface = if (self.bar) |b| b.surface else null;
+                self.ptr_on = if (e.surface != null and e.surface == bar_surface)
+                    .bar
+                else if (e.surface != null and e.surface == self.surface) .content else .none;
+                // Each enter needs its cursor set again.
+                self.cursor_now = null;
+                self.updatePointer();
             },
-            .leave => {},
+            .leave => {
+                self.close_armed = false;
+                self.setBarHover(.none);
+                self.ptr_on = .none;
+            },
             .motion => |mo| {
                 self.ptr_x = mo.x.toFloat();
                 self.ptr_y = mo.y.toFloat();
-                if (self.left_held) {
+                self.updatePointer();
+                if (self.ptr_on == .content and self.left_held) {
                     const xy = self.pos();
                     self.queue.push(.{ .mouse_move = .{ .x = xy[0], .y = xy[1], .left_held = true } });
                 }
             },
             .button => |b| {
                 self.serial = b.serial;
+                if (b.state == .pressed) self.press_serial = b.serial;
+                // The bar's (a release ends a press made in the content
+                // there, wherever it is).
+                if (self.onBar() and !(self.left_held and b.state == .released)) return self.barButton(b);
                 const xy = self.pos();
                 const button: root.MouseButton = switch (b.button) {
                     WL.BTN_LEFT => .left,
@@ -713,6 +1094,11 @@ pub const Window = struct {
                 };
                 switch (b.state) {
                     .pressed => {
+                        // Our bar's resize grips inside the content's edges.
+                        if (button == .left and !self.left_held) if (self.contentEdge()) |edge| {
+                            _ = self.startResize(edge);
+                            return;
+                        };
                         if (button == .left) self.left_held = true;
                         self.queue.push(.{ .mouse_down = .{ .x = xy[0], .y = xy[1], .button = button, .mods = self.mods() } });
                     },
@@ -748,6 +1134,13 @@ pub const Window = struct {
 
     fn flushScroll(self: *Window) void {
         if (!self.scroll_any) return;
+        if (self.ptr_on != .content or self.onBar()) {
+            // The wheel over the bar does nothing.
+            self.scroll_value = .{ 0, 0 };
+            self.scroll_v120 = .{ 0, 0 };
+            self.scroll_any = false;
+            return;
+        }
         var notches: [2]f32 = undefined;
         for (0..2) |i| {
             // Wayland axis values grow downwards / rightwards; continuous
@@ -899,9 +1292,11 @@ pub const Window = struct {
 
     // ------------------------------------------- touch-device extras (none)
 
+    /// Our title bar covers the content's top strip (none where the
+    /// compositor decorates).
     pub fn insets(self: *const Window) root.Insets {
-        _ = self;
-        return .{};
+        if (!self.clientDecorations()) return .{};
+        return .{ .top = @floatFromInt(csd.bar_h * self.buffer_scale) };
     }
 
     /// No native text field here: keys and text arrive as events.
@@ -1007,6 +1402,48 @@ fn setNonBlocking(fd: i32) bool {
     var flags: linux.O = @bitCast(@as(u32, @truncate(got)));
     flags.NONBLOCK = true;
     return linux.errno(linux.fcntl(fd, linux.F.SETFL, @as(u32, @bitCast(flags)))) == .SUCCESS;
+}
+
+fn xdgEdge(e: root.ResizeEdge) XDG.Toplevel.ResizeEdge {
+    return switch (e) {
+        .top => .top,
+        .bottom => .bottom,
+        .left => .left,
+        .right => .right,
+        .top_left => .top_left,
+        .top_right => .top_right,
+        .bottom_left => .bottom_left,
+        .bottom_right => .bottom_right,
+    };
+}
+
+fn shapeOf(c: csd.Cursor) SHAPE.Device.Shape {
+    return switch (c) {
+        .default => .default,
+        .n => .n_resize,
+        .s => .s_resize,
+        .e => .e_resize,
+        .w => .w_resize,
+        .ne => .ne_resize,
+        .nw => .nw_resize,
+        .se => .se_resize,
+        .sw => .sw_resize,
+    };
+}
+
+/// Xcursor names (also in libwayland-cursor's built-in set).
+fn xcursorName(c: csd.Cursor) [*:0]const u8 {
+    return switch (c) {
+        .default => "left_ptr",
+        .n => "top_side",
+        .s => "bottom_side",
+        .e => "right_side",
+        .w => "left_side",
+        .ne => "top_right_corner",
+        .nw => "top_left_corner",
+        .se => "bottom_right_corner",
+        .sw => "bottom_left_corner",
+    };
 }
 
 fn keyFromSym(sym: u32) ?Key {
