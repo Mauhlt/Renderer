@@ -14,12 +14,17 @@
 //!   clipboard   wl_data_device (local shim in wl_data.zig)
 //!   wake        an eventfd in the same poll as the display socket
 //!
-//! Event driven: waitEvents is one poll(2) on the display fd, the wake
-//! eventfd and the repeat timerfd, using libwayland's prepare_read /
-//! read_events protocol, with the caller's timeout (or none).
+//! Event driven: waitEvents polls the display fd, the wake eventfd and
+//! the repeat timerfd, using libwayland's prepare_read / read_events
+//! protocol, with the caller's timeout (or none). It returns only for
+//! the app: an event queued, a wake, or the timeout. Traffic on the
+//! socket that is not ours (Vulkan's WSI keeps frame callbacks and
+//! buffer releases on its own event queue; pointer motion with no button
+//! held) is read and the wait goes on: returning for it would make an
+//! app that draws after every wait present again, ask for another frame
+//! callback, and draw at the compositor's refresh rate forever.
 //!
-//! STATUS: compile-checked by cross-compilation (x86_64-linux-gnu) only;
-//! never run.
+//! STATUS: run under WSLg (Weston); not yet on GNOME or KDE.
 
 const std = @import("std");
 const linux = std.os.linux;
@@ -260,7 +265,7 @@ pub const Window = struct {
 
     pub fn pollEvent(self: *Window) ?Event {
         if (self.queue.pop()) |e| return e;
-        self.pump(0);
+        _ = self.pump(0);
         return self.queue.pop();
     }
 
@@ -268,9 +273,18 @@ pub const Window = struct {
         return self.queue.pop();
     }
 
+    /// Sleeps until an event is queued, wake() or `timeout_ms`
+    /// (`root.forever`: no limit). Socket traffic that queues nothing
+    /// (another event queue's, or ignored events) does not end it: the
+    /// wait resumes with what is left of the timeout.
     pub fn waitEvents(self: *Window, timeout_ms: u32) void {
         if (self.queue.pending()) return;
-        self.pump(timeout_ms);
+        const deadline: ?u64 = if (timeout_ms == root.forever) null else monotonicNs() +| @as(u64, timeout_ms) * std.time.ns_per_ms;
+        while (true) {
+            const t: i32 = if (deadline) |d| root.msUntil(monotonicNs(), d) else -1;
+            if (self.pump(t) or self.queue.pending()) return;
+            if (deadline) |d| if (monotonicNs() >= d) return;
+        }
     }
 
     /// Any thread. The eventfd counter coalesces any number of wakes into
@@ -310,22 +324,29 @@ pub const Window = struct {
     // --------------------------------------------------------------- loop
 
     /// One round of the libwayland read protocol plus our fds, waiting at
-    /// most `timeout_ms` (`root.forever`: no limit).
-    fn pump(self: *Window, timeout_ms: u32) void {
+    /// most `t` ms (poll(2)'s timeout: negative, no limit). True when the
+    /// wait should end whatever was queued: wake(), the connection lost,
+    /// or poll failing (not EINTR). False otherwise: the socket, the
+    /// repeat timer, a paste or a timeout (waitEvents keeps its own
+    /// deadline; a paste's may have cut the poll short); any events are
+    /// in the queue.
+    fn pump(self: *Window, t: i32) bool {
         const d = self.display;
-        const t: i32 = if (timeout_ms == root.forever) -1 else @intCast(@min(timeout_ms, std.math.maxInt(i32)));
         if (self.dead) {
             var fds = [_]linux.pollfd{
                 .{ .fd = self.wake_fd, .events = linux.POLL.IN },
             };
-            _ = linux.poll(&fds, fds.len, t);
+            const rc = linux.poll(&fds, fds.len, t);
             if (fds[0].revents & linux.POLL.IN != 0) drain(self.wake_fd);
-            return;
+            return linux.errno(rc) != .INTR;
         }
         // Events already read but not dispatched must be dispatched before
         // waiting, or the wait could sleep on work that is already here.
         while (!d.prepareRead()) {
-            _ = d.dispatchPending() catch return self.fail();
+            _ = d.dispatchPending() catch {
+                self.fail();
+                return true;
+            };
         }
         var wait = if (self.queue.pending()) 0 else t;
         _ = d.flush() catch {};
@@ -343,10 +364,16 @@ pub const Window = struct {
         const rc = linux.poll(&fds, fds.len, wait);
         const polled = linux.errno(rc) == .SUCCESS;
         if (polled and fds[0].revents & (linux.POLL.IN | linux.POLL.ERR | linux.POLL.HUP) != 0) {
-            d.readEvents() catch return self.fail();
+            d.readEvents() catch {
+                self.fail();
+                return true;
+            };
         } else d.cancelRead();
-        _ = d.dispatchPending() catch return self.fail();
-        if (!polled) return;
+        _ = d.dispatchPending() catch {
+            self.fail();
+            return true;
+        };
+        if (!polled) return linux.errno(rc) != .INTR;
         // Dispatching may have started a new paste in a free slot (polled as
         // fd -1): only a slot whose own fd was polled acts on revents.
         const after = monotonicNs();
@@ -355,7 +382,8 @@ pub const Window = struct {
             if (p.fd == s.fd and p.revents != 0) self.continueSend(s);
             if (s.fd >= 0 and after >= s.deadline_ns) self.endSend(s);
         }
-        if (fds[1].revents & linux.POLL.IN != 0) drain(self.wake_fd);
+        const woken = fds[1].revents & linux.POLL.IN != 0;
+        if (woken) drain(self.wake_fd);
         if (fds[2].revents & linux.POLL.IN != 0) {
             var n: u64 = 0;
             if (linux.errno(linux.read(self.timer_fd, std.mem.asBytes(&n), 8)) == .SUCCESS) {
@@ -366,6 +394,7 @@ pub const Window = struct {
             }
         }
         _ = d.flush() catch {};
+        return woken;
     }
 
     fn fail(self: *Window) void {
