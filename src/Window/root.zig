@@ -485,6 +485,8 @@ test "minTimeout: negative is no timeout" {
 
 test {
     if (builtin.os.tag == .windows) _ = @import("win32.zig");
+    // The macOS key mapping is pure: tested on every host.
+    _ = @import("cocoa_keys.zig");
 }
 
 test "utf8Prefix never splits a code point" {

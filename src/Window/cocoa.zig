@@ -23,6 +23,7 @@ const OBJC = Mac.OBJC;
 const APPKIT = Mac.APPKIT;
 const TY = Mac.TYPES;
 const root = @import("root.zig");
+const cocoa_keys = @import("cocoa_keys.zig");
 
 const Object = OBJC.Object;
 const msgSend = OBJC.msgSend;
@@ -336,16 +337,10 @@ pub const Window = struct {
         if (key) |k| return self.queue.push(.{ .key = .{ .key = k, .mods = mods } });
 
         const plain: []const u8 = if (ev.charactersIgnoringModifiers()) |s| std.mem.span(s.utf8() orelse "") else "";
+        // Command or Control: zoom, Cmd+Q / Cmd+W close, letters as the
+        // lowercase letter with the mods (cocoa_keys.zig, unit-tested).
         if (mods.super or mods.ctrl) {
-            if (plain.len == 1) switch (plain[0]) {
-                '=', '+' => return self.queue.push(.{ .zoom = .in }),
-                '-' => return self.queue.push(.{ .zoom = .out }),
-                '0' => return self.queue.push(.{ .zoom = .reset }),
-                // Cmd+Q / Cmd+W close the window (there is no app menu).
-                'q', 'w' => if (mods.super) return self.queue.push(.close) else if (mods.ctrl) return self.queue.push(.{ .char = .{ .cp = plain[0], .mods = mods } }),
-                'a'...'p', 'r'...'v', 'x'...'z', '[', '\\', ']', ' ', '/' => if (mods.ctrl) return self.queue.push(.{ .char = .{ .cp = plain[0], .mods = mods } }),
-                else => {},
-            };
+            if (cocoa_keys.shortcut(plain, mods)) |e| self.queue.push(e);
             return;
         }
         const str = ev.characters() orelse return;
