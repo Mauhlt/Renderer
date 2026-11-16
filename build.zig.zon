@@ -8,21 +8,21 @@
     // program using Image and Renderer gets one shared "Vulkan" module.
     .dependencies = .{
         .Vulkan = .{
-            .url = "git+https://github.com/Mauhlt/Vulkan#b831b1e464db394c2ddb8da11d5dff93f1df4144",
-            .hash = "Vulkan-0.1.0-9v7hoY4bAACSpjlULEH56u3k6cYDDZa1hgBgVU-lkUuR",
+            .url = "git+https://github.com/Mauhlt/Vulkan#61aaf9f6ae0114b22ce42f72822991d549dcc055",
+            .hash = "Vulkan-0.1.0-9v7hoTYlAAAp50c3Eqxe-uaBkVPkgcgpB_5I1fWewcVs",
         },
         .Windows = .{
-            .url = "git+https://github.com/Mauhlt/Windows#7fe3899260c18ba3f672ed64aaa1f24e8e5829d7",
-            .hash = "Windows-0.0.0-F1HWOUCtAwA8VZdYAi2YoJavXyjb2ZiIiu9s3EmNnt4l",
+            .url = "git+https://github.com/Mauhlt/Windows#29e94252aed079b3e5b1502a04c42dae15ce9bd9",
+            .hash = "Windows-0.0.0-F1HWObO0AwDpr1kFX_O1s_zP9vYzTY7v8Rop7yX3LX_Z",
         },
         // Window module backends (src/Window): Wayland on Linux, AppKit on macOS.
         .Wayland = .{
-            .url = "git+https://github.com/Mauhlt/Wayland#bd5b49e1b628d58ede1d93b2dde2e733e52c6537",
-            .hash = "Wayland-0.0.0-Sp1dru1HAQBes2CP4TGMh3aIe0xTbNgkT3WgOkTObnkf",
+            .url = "git+https://github.com/Mauhlt/Wayland#4aa975f443ba59d5989cb62bb23a0f8cb8e202fd",
+            .hash = "Wayland-0.0.0-Sp1drpdSAQAkRXnMMtw44T1zDT4p30NrYyP_1Mi7l6mb",
         },
         .MacOS = .{
-            .url = "git+https://github.com/Mauhlt/MacOS#4960014dbbda33f54b40f6d32e35b9ec61498574",
-            .hash = "MacOS-0.0.0-AvEoY9GwAACyf7BIF8-DI1vAzl_hero7eEXqH9v9Onpy",
+            .url = "git+https://github.com/Mauhlt/MacOS#fc552c480e9ecfa0b4576481fe817936dc0d4728",
+            .hash = "MacOS-0.0.0-AvEoY7S3AACKSOXAWqzb7xFF45GtaYscOv9_sIkT4bi4",
         },
     },
     .paths = .{
