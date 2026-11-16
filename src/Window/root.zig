@@ -536,6 +536,8 @@ test {
     if (builtin.os.tag == .windows) _ = @import("win32.zig");
     // The Wayland title bar's layout and hit testing (no Wayland calls).
     _ = @import("wl_csd.zig");
+    // The macOS key mapping is pure: tested on every host.
+    _ = @import("cocoa_keys.zig");
 }
 
 test "utf8Prefix never splits a code point" {
