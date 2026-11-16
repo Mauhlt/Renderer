@@ -21,8 +21,8 @@
             .hash = "Wayland-0.0.0-Sp1drpdSAQAkRXnMMtw44T1zDT4p30NrYyP_1Mi7l6mb",
         },
         .MacOS = .{
-            .url = "git+https://github.com/Mauhlt/MacOS#fc552c480e9ecfa0b4576481fe817936dc0d4728",
-            .hash = "MacOS-0.0.0-AvEoY7S3AACKSOXAWqzb7xFF45GtaYscOv9_sIkT4bi4",
+            .url = "git+https://github.com/Mauhlt/MacOS#e1d93c290429457e532db7fa2ecec7c0411421f0",
+            .hash = "MacOS-0.0.1-AvEoY7S3AABQHe6a7pKtzamlfs1nLEECaoX2f8VGa0Cs",
         },
     },
     .paths = .{
