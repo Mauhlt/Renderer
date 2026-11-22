@@ -15,6 +15,11 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
+    // A font an app may ship (DejaVu Sans Mono 2.37, unmodified), and its
+    // licence, which must ship with it (THIRD_PARTY.md):
+    // `dep.namedLazyPath("dejavu_sans_mono")` and `"dejavu_sans_mono_licence"`.
+    b.addNamedLazyPath("dejavu_sans_mono", b.path("src/Font/fonts/dejavu/DejaVuSansMono.ttf"));
+    b.addNamedLazyPath("dejavu_sans_mono_licence", b.path("src/Font/fonts/dejavu/LICENSE.txt"));
     const font_tests = b.addTest(.{ .root_module = font_mod });
     const font_step = b.step("test-font", "Test the Font module and compile it for wasm32-freestanding");
     font_step.dependOn(&b.addRunArtifact(font_tests).step);

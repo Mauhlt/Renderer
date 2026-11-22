@@ -491,9 +491,9 @@ fn f2dot14(v: i16) f32 {
 
 const testing = std.testing;
 
-/// DejaVu Sans Mono 2.37 (testdata/, see testdata/LICENSE.txt), embedded so
+/// DejaVu Sans Mono 2.37 (fonts/dejavu/, see fonts/dejavu/LICENSE.txt), embedded so
 /// the tests run the same on every machine and target.
-pub const test_font: []const u8 = @embedFile("testdata/DejaVuSansMono.ttf");
+pub const test_font: []const u8 = @embedFile("fonts/dejavu/DejaVuSansMono.ttf");
 
 /// A heap copy of the test font (the corruption tests mutate it).
 fn loadTestFont(gpa: std.mem.Allocator) ?[]u8 {

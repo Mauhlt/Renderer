@@ -70,5 +70,5 @@ To build against local checkouts, use `zig build --fork=<path>`.
 
 ## Licence
 
-MIT, see `LICENSE`. Third-party material (the DejaVu test font) keeps its
+MIT, see `LICENSE`. Third-party material (the DejaVu Sans Mono font) keeps its
 own licence, see `THIRD_PARTY.md`.
