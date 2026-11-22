@@ -18,3 +18,15 @@ export fn fontCheckRaster(w: u32, h: u32, out: [*]u8) void {
     c.line(0, 0, @floatFromInt(w), @floatFromInt(h));
     c.finish(out[0 .. @as(usize, w) * h]);
 }
+
+/// The browser's text path: a font set from the app's bytes and the glyph
+/// coverage cache over `FontSet.render`.
+export fn fontCheckCache(ptr: [*]const u8, len: usize, cp: u32, em: f32) u32 {
+    const gpa = @import("std").heap.wasm_allocator;
+    var fs = Font.fontset.FontSet.fromMemory(gpa, @import("std").Io.failing, ptr[0..len], null) catch return 0;
+    defer fs.deinit();
+    var cache = Font.glyphcache.GlyphCache.init(gpa, 1 << 20);
+    defer cache.deinit();
+    const g = cache.get(&fs, @intCast(cp & 0x1FFFFF), .{ .italic = true }, fs.metrics(em), 2) orelse return 0;
+    return g.w * g.h;
+}

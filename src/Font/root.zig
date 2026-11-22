@@ -10,16 +10,19 @@
 //!   raster    exact-area scanline rasteriser for glyph outlines
 //!   wcwidth   terminal cell width of a code point (0, 1 or 2)
 //!   fontset   system monospace font + fallbacks, cell-sized glyph bitmaps,
-//!             procedural box drawing (reads OS font files through std.Io;
-//!             native only)
+//!             procedural box drawing (reads OS font files through std.Io,
+//!             or takes font bytes from the app: fromMemory, for a browser)
 //!   atlas     CPU-side RGBA8 glyph atlas with a shelf packer and a dirty
 //!             rectangle to upload (e.g. to Instanced2D's texture)
+//!   glyphcache bounded cache of the same glyph coverage for CPU drawing
+//!             (module "Raster"), least recently used evicted first
 
 pub const ttf = @import("ttf.zig");
 pub const raster = @import("raster.zig");
 pub const wcwidth = @import("wcwidth.zig");
 pub const fontset = @import("fontset.zig");
 pub const atlas = @import("atlas.zig");
+pub const glyphcache = @import("glyphcache.zig");
 
 test {
     _ = ttf;
@@ -27,4 +30,5 @@ test {
     _ = wcwidth;
     _ = fontset;
     _ = atlas;
+    _ = glyphcache;
 }

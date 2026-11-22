@@ -9,7 +9,8 @@ keeps all of its own drawing logic. Nothing here knows about any one app.
 | Module     | Root                   | What it is |
 |------------|------------------------|------------|
 | `Renderer` | `src/root.zig`         | `Instanced2D`: one instanced draw call per frame of quads sampling one RGBA8 texture (an atlas). Takes a native surface handle (Win32, Wayland, Metal through MoltenVK). Needs only the Vulkan package. |
-| `Font`     | `src/Font/root.zig`    | TrueType parser, exact-area rasteriser, terminal cell widths, system font set and a CPU glyph atlas. Only std: also builds for wasm32-freestanding. |
+| `Font`     | `src/Font/root.zig`    | TrueType parser, exact-area rasteriser, terminal cell widths, font set (system fonts, or font bytes from the app), a CPU glyph atlas for the GPU and a bounded glyph coverage cache for CPU drawing. Only std: also builds for wasm32-freestanding. |
+| `Raster`   | `src/Raster/root.zig`  | 2D drawing on the CPU into a caller-owned RGBA8 buffer: clear, anti-aliased rectangles, glyph coverage masks, bilinear-scaled images, each with a clip; blends as Instanced2D does (straight alpha, sRGB-encoded values, "over"). Only std, no allocator: for a browser (wasm32-freestanding, the buffer shown with putImageData) or any target without the GPU path. |
 | `Window`   | `src/Window/root.zig`  | A native window with one event-driven interface: Win32, Wayland (no X11), macOS AppKit and iOS UIKit. Only the target OS's bindings are imported. |
 | `IosObjC`  | `src/Window/ios_objc.zig` | The iOS backend's Objective-C runtime layer on its own, for iOS code without a window (an app extension). |
 
@@ -49,6 +50,7 @@ const renderer = b.dependency("Renderer", .{ .target = target, .optimize = optim
 mod.addImport("Renderer", renderer.module("Renderer"));
 mod.addImport("Window", renderer.module("Window"));
 mod.addImport("Font", renderer.module("Font"));
+mod.addImport("Raster", renderer.module("Raster")); // CPU drawing, e.g. in a browser
 ```
 
 Its own dependencies (Vulkan, Windows, Wayland, MacOS) are URL packages too.
@@ -58,7 +60,11 @@ To build against local checkouts, use `zig build --fork=<path>`.
 
 - `zig build test`: every module's tests plus compile checks of the Window
   module for x86_64-windows, x86_64-linux-gnu, aarch64-macos and aarch64-ios
-  and of the Font module for wasm32-freestanding and aarch64-ios.
+  and of the Font module for aarch64-ios, and `wasm-check`.
+- `zig build wasm-check`: compiles the browser path (Raster, Font from
+  memory, the glyph cache) for wasm32-freestanding, baseline and +simd128.
+- `zig build bench-raster`: times Raster frames of phone-sized text
+  (1170x2532) in ReleaseFast on this machine; not part of the tests.
 - `zig build window-smoke`: opens a window on this machine for about two
   seconds and checks present, wake, timed wait and the clipboard.
 

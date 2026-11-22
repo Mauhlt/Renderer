@@ -30,6 +30,9 @@ const primary_paths: []const FontRef = switch (builtin.os.tag) {
         .{ .path = "/System/Library/Fonts/Core/Courier.ttc", .index = 0 },
         .{ .path = "/System/Library/Fonts/CoreAddition/Courier New.ttf" },
     },
+    // No file system (a browser), here and in the lists below: the app
+    // passes its font bytes to FontSet.fromMemory.
+    .freestanding => &.{},
     else => &.{
         .{ .path = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf" },
         .{ .path = "/usr/share/fonts/TTF/DejaVuSansMono.ttf" },
@@ -49,6 +52,7 @@ const bold_paths: []const FontRef = switch (builtin.os.tag) {
         .{ .path = "/System/Library/Fonts/Core/Menlo.ttc", .index = 1 },
         .{ .path = "/System/Library/Fonts/CoreAddition/Menlo.ttc", .index = 1 },
     },
+    .freestanding => &.{},
     else => &.{
         .{ .path = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf" },
         .{ .path = "/usr/share/fonts/TTF/DejaVuSansMono-Bold.ttf" },
@@ -77,6 +81,7 @@ const fallback_paths: []const FontRef = switch (builtin.os.tag) {
         .{ .path = "/Library/Fonts/Arial Unicode.ttf" },
         .{ .path = "/System/Library/Fonts/Apple Symbols.ttf" },
     },
+    .freestanding => &.{},
     else => &.{
         .{ .path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf" },
         .{ .path = "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf" },
@@ -194,6 +199,14 @@ pub const Metrics = struct {
     stroke: u32,
 };
 
+/// One rendered glyph's identity within a font set, as `FontSet.render`
+/// draws it: code point, em size (in quarter pixels), style and cell span
+/// (1 or 2). The key of the GPU atlas and of the CPU glyph cache.
+pub fn glyphKey(cp: u21, em: f32, style: Style, cells: u32) u64 {
+    const em_q: u64 = @intFromFloat(@min(@max(em * 4, 0), 65535));
+    return @as(u64, cp) | (em_q << 21) | (@as(u64, @as(u2, @bitCast(style))) << 37) | (@as(u64, cells & 3) << 39);
+}
+
 pub const FontSet = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -216,6 +229,29 @@ pub const FontSet = struct {
         };
     }
 
+    /// A font set from font files the app already holds (a browser has no
+    /// font directories: @embedFile'd or fetched bytes). The bytes are
+    /// copied. A .ttc collection gives its regular (or bold) face; with no
+    /// `bold` file bold text is emboldened, as with `load`. Fallbacks come
+    /// from the OS lists through `io` as with `load` (none on
+    /// freestanding, where `std.Io.failing` will do).
+    pub fn fromMemory(gpa: std.mem.Allocator, io: std.Io, regular: []const u8, bold: ?[]const u8) !FontSet {
+        const r = memoryFace(gpa, regular, false) orelse return error.NoMonospaceFont;
+        return .{
+            .gpa = gpa,
+            .io = io,
+            .regular = r,
+            .bold = if (bold) |b| memoryFace(gpa, b, true) else null,
+        };
+    }
+
+    fn memoryFace(gpa: std.mem.Allocator, bytes: []const u8, bold: bool) ?Face {
+        const data = gpa.dupe(u8, bytes) catch return null;
+        if (styledFace(data, bold)) |font| return .{ .data = data, .font = font };
+        gpa.free(data);
+        return null;
+    }
+
     pub fn deinit(fs: *FontSet) void {
         fs.gpa.free(fs.regular.data);
         if (fs.bold) |b| fs.gpa.free(b.data);
@@ -231,6 +267,7 @@ pub const FontSet = struct {
     }
 
     fn loadFace(gpa: std.mem.Allocator, io: std.Io, r: FontRef) TryError!Face {
+        if (builtin.os.tag == .freestanding) return error.Missing; // no files to read
         const data = std.Io.Dir.cwd().readFileAlloc(io, r.path, gpa, .limited(max_font_bytes)) catch return error.Missing;
         errdefer gpa.free(data);
         const font = ttf.Font.init(data, r.index) catch return error.Unusable;

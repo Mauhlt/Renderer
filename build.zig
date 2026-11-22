@@ -28,6 +28,48 @@ pub fn build(b: *std.Build) !void {
     });
     font_step.dependOn(&font_wasm.step);
 
+    // Module "Raster" (src/Raster/root.zig): 2D drawing on the CPU into a
+    // caller-owned RGBA8 buffer (rectangles, glyph coverage masks, scaled
+    // images), for targets with no GPU path such as a browser
+    // (wasm32-freestanding). Only std; text comes from the Font module's
+    // glyph cache (Font.glyphcache), which the app passes to Raster.mask.
+    const raster_mod = b.addModule("Raster", .{
+        .root_source_file = b.path("src/Raster/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const raster_step = b.step("test-raster", "Test the Raster module (also with Font: text from the glyph cache) and run wasm-check");
+    raster_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = raster_mod })).step);
+    const raster_text_tests = b.addTest(.{ .name = "raster-text", .root_module = b.createModule(.{
+        .root_source_file = b.path("src/Raster/text_test.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{ .{ .name = "Raster", .module = raster_mod }, .{ .name = "Font", .module = font_mod } },
+    }) });
+    raster_step.dependOn(&b.addRunArtifact(raster_text_tests).step);
+    // Compile-only: the browser's path (Raster + Font from memory + glyph
+    // cache) for wasm32-freestanding, with and without SIMD128.
+    const wasm_step = b.step("wasm-check", "Compile Raster and Font for wasm32-freestanding (baseline and +simd128)");
+    const wasm_targets = [_]std.Target.Query{
+        .{ .cpu_arch = .wasm32, .os_tag = .freestanding },
+        .{ .cpu_arch = .wasm32, .os_tag = .freestanding, .cpu_features_add = std.Target.wasm.featureSet(&.{.simd128}) },
+    };
+    for (wasm_targets, [_][]const u8{ "", "-simd128" }) |q, suffix| {
+        const obj = b.addObject(.{
+            .name = b.fmt("raster-wasm-check{s}", .{suffix}),
+            .root_module = rasterUser(b, "src/Raster/wasm_check.zig", b.resolveTargetQuery(q), .ReleaseSmall),
+        });
+        // Asking for the object runs code generation too (SIMD128 lowering).
+        _ = obj.getEmittedBin();
+        wasm_step.dependOn(&obj.step);
+    }
+    wasm_step.dependOn(&font_wasm.step);
+    raster_step.dependOn(wasm_step);
+    // `zig build bench-raster`: frame timings on this machine (ReleaseFast;
+    // not run by the tests).
+    const raster_bench = b.addExecutable(.{ .name = "raster-bench", .root_module = rasterUser(b, "src/Raster/bench.zig", target, .ReleaseFast) });
+    b.step("bench-raster", "Time Raster frames of phone-sized text (1170x2532) in ReleaseFast").dependOn(&b.addRunArtifact(raster_bench).step);
+
     // Reusable library module "Renderer" (src/root.zig): Instanced2D. Needs
     // only the Vulkan package and works for any target. It ships no
     // shaders: the app passes its own SPIR-V to Instanced2D.init (its
@@ -40,7 +82,7 @@ pub fn build(b: *std.Build) !void {
         .imports = &.{.{ .name = "Vulkan", .module = vulkan_lib }},
     });
     const lib_tests = b.addTest(.{ .root_module = lib_mod });
-    const lib_step = b.step("test-lib", "Test the Renderer library module (and the Font module)");
+    const lib_step = b.step("test-lib", "Test the Renderer library module (and the Font, Raster and Window modules)");
     lib_step.dependOn(&b.addRunArtifact(lib_tests).step);
     // Test shaders (src/testing): only Renderer's own tests and the
     // window-smoke step use them, never the library module.
@@ -57,6 +99,7 @@ pub fn build(b: *std.Build) !void {
     const shader_tests = b.addTest(.{ .root_module = test_shaders });
     lib_step.dependOn(&b.addRunArtifact(shader_tests).step);
     lib_step.dependOn(font_step);
+    lib_step.dependOn(raster_step);
 
     // Module "Window" (src/Window/root.zig): a native window for Instanced2D
     // with one interface everywhere. Win32 on ../Windows, Wayland on
@@ -142,16 +185,34 @@ pub fn build(b: *std.Build) !void {
     b.step("window-smoke", "Open a Window here and check present, wake, timed wait and clipboard at runtime").dependOn(&b.addRunArtifact(smoke).step);
 
     // `zig build test`: every module's tests and the compile-only checks
-    // (test-lib covers test-font and test-window). `zig build` compiles the
-    // same without running anything, so a plain build still checks the code.
-    b.step("test", "Run all tests (test-lib: the Renderer, Font and Window modules) and the compile checks").dependOn(lib_step);
+    // (test-lib covers test-font, test-raster and test-window). `zig build`
+    // compiles the same without running anything, so a plain build still
+    // checks the code.
+    b.step("test", "Run all tests (test-lib: the Renderer, Font, Raster and Window modules) and the compile checks").dependOn(lib_step);
     b.getInstallStep().dependOn(&lib_tests.step);
     b.getInstallStep().dependOn(&shader_tests.step);
     b.getInstallStep().dependOn(&font_tests.step);
     b.getInstallStep().dependOn(&window_tests.step);
     b.getInstallStep().dependOn(cross_step);
     b.getInstallStep().dependOn(&font_wasm.step);
+    b.getInstallStep().dependOn(&raster_text_tests.step);
+    b.getInstallStep().dependOn(wasm_step);
+    b.getInstallStep().dependOn(&raster_bench.step);
     b.getInstallStep().dependOn(&smoke.step);
+}
+
+/// A root module (a test, check or tool) importing "Raster" and "Font",
+/// both built for `t` and `optimize`.
+fn rasterUser(b: *std.Build, root: []const u8, t: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = b.path(root),
+        .target = t,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "Raster", .module = b.createModule(.{ .root_source_file = b.path("src/Raster/root.zig"), .target = t, .optimize = optimize }) },
+            .{ .name = "Font", .module = b.createModule(.{ .root_source_file = b.path("src/Font/root.zig"), .target = t, .optimize = optimize }) },
+        },
+    });
 }
 
 /// Compiles a shader written in Zig (one entry point `export fn main()`

@@ -75,11 +75,6 @@ pub const Atlas = struct {
         };
     }
 
-    fn key(cp: u21, em: f32, style: fontset.Style, cells: u32) u64 {
-        const em_q: u64 = @intFromFloat(@min(@max(em * 4, 0), 65535));
-        return @as(u64, cp) | (em_q << 21) | (@as(u64, @as(u2, @bitCast(style))) << 37) | (@as(u64, cells & 3) << 39);
-    }
-
     fn alloc(a: *Atlas, w: u32, h: u32) ?Slot {
         if (w + 1 > a.width or h + 1 > a.height) return null;
         for (a.shelves.items) |*s| {
@@ -99,7 +94,7 @@ pub const Atlas = struct {
     /// Returns the slot for a glyph, rasterising it on first use. Null if the
     /// atlas is full (the caller should wipe and redraw next frame).
     pub fn get(a: *Atlas, fonts: *fontset.FontSet, cp: u21, style: fontset.Style, m: fontset.Metrics, cells: u32) ?Slot {
-        const k = key(cp, m.em, style, cells);
+        const k = fontset.glyphKey(cp, m.em, style, cells);
         if (a.map.get(k)) |s| return s;
         const w = m.cell_w * cells;
         const h = m.cell_h;
