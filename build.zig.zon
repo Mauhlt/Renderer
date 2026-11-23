@@ -12,8 +12,8 @@
             .hash = "Vulkan-0.1.0-9v7hoTYlAAAp50c3Eqxe-uaBkVPkgcgpB_5I1fWewcVs",
         },
         .Windows = .{
-            .url = "git+https://github.com/Mauhlt/Windows#9347aeb2714a26cbc73e321e17622bc2da0d7399",
-            .hash = "Windows-0.0.0-F1HWOSycBQAtMxuDrbNRMPPGfU5UcSX63mnphvVuikl_",
+            .url = "git+https://github.com/Mauhlt/Windows#a62d768ea17e8ed25e21aa0b3fb02e0b754708f2",
+            .hash = "Windows-0.0.0-F1HWOZ5BBgDHpJ6-KDczD0kH2zYsdgC4Up9Cx5yl0X_5",
         },
         // Window module backends (src/Window): Wayland on Linux, AppKit on macOS.
         .Wayland = .{
