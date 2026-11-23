@@ -195,7 +195,7 @@ pub const Window = struct {
         }
         // A finger on the touch screen (WM_POINTER*, not in the Messages
         // enum): see `touchPointer`.
-        if ((msg >= WM_POINTERUPDATE and msg <= WM_POINTERUP) or msg == WM_POINTERCAPTURECHANGED) return self.touchPointer(hwnd, msg, wp, lp);
+        if (takesPointer(msg)) return self.touchPointer(hwnd, msg, wp, lp);
         // Tablet mode on or off, a keyboard attached or taken off: the app
         // asks again what input there is. DefWindowProc still sees it.
         if (msg == WM_SETTINGCHANGE) {
@@ -348,8 +348,14 @@ pub const Window = struct {
             }
             return null;
         }
-        var kind: E.PointerInputType = .pointer;
-        if (!USER.GetPointerType(id, &kind).toBool() or kind != .touch) return null;
+        // The finger that is the pointer needs no asking: its up always ends
+        // it, even when Windows no longer knows the pointer's type then
+        // (GetPointerType fails once the pointer is gone), so no later touch
+        // is ever ignored behind a finger that never came up.
+        if (self.touch_id != id) {
+            var kind: E.PointerInputType = .pointer;
+            if (!USER.GetPointerType(id, &kind).toBool() or kind != .touch) return null;
+        }
         // Pointer positions are in screen coordinates.
         var pt: S.POINT = .{ .x = USER.getXLParam(lp), .y = USER.getYLParam(lp) };
         _ = USER.ScreenToClient(hwnd, &pt);
@@ -357,6 +363,15 @@ pub const Window = struct {
         switch (touchStep(self.touch_id, id, msg, flags)) {
             .ignore => {},
             .down => {
+                self.touch_id = id;
+                self.touch_last = at;
+                self.queue.push(.{ .mouse_down = .{ .x = at[0], .y = at[1], .mods = currentMods(), .source = .touch } });
+            },
+            .restart => {
+                // A new first finger while the old one is still held here:
+                // that one's up was lost. It ends without acting; this one
+                // is the pointer now.
+                self.queue.push(.{ .mouse_up = .{ .x = self.touch_last[0], .y = self.touch_last[1], .cancelled = true, .source = .touch } });
                 self.touch_id = id;
                 self.touch_last = at;
                 self.queue.push(.{ .mouse_down = .{ .x = at[0], .y = at[1], .mods = currentMods(), .source = .touch } });
@@ -594,20 +609,33 @@ const WM_SETTINGCHANGE: u32 = 0x001A;
 const WM_POINTERUPDATE: u32 = 0x0245;
 const WM_POINTERDOWN: u32 = 0x0246;
 const WM_POINTERUP: u32 = 0x0247;
+const WM_POINTERACTIVATE: u32 = 0x024B;
 const WM_POINTERCAPTURECHANGED: u32 = 0x024C;
 /// POINTER_MESSAGE_FLAG_* (the high word of a WM_POINTER wParam).
 const POINTER_FLAG_INCONTACT: u16 = 0x0004;
 const POINTER_FLAG_PRIMARY: u16 = 0x2000;
 const POINTER_FLAG_CANCELED: u16 = 0x8000;
 
+/// The WM_POINTER messages `touchPointer` sees. WM_POINTERACTIVATE is not
+/// one of them: DefWindowProc answers it (PA_ACTIVATE), so a finger's tap
+/// on Portal's window while another app is in front still activates it,
+/// although the finger's own WM_POINTERDOWN is taken here (Windows then
+/// makes no WM_MOUSEACTIVATE of it).
+fn takesPointer(msg: u32) bool {
+    return (msg >= WM_POINTERUPDATE and msg <= WM_POINTERUP) or msg == WM_POINTERCAPTURECHANGED;
+}
+
 /// What a WM_POINTER message for touch `id` does to the finger that is
 /// the pointer (`held`: its id while it is down).
-const TouchStep = enum { ignore, down, move, up, cancel };
+const TouchStep = enum { ignore, down, move, up, cancel, restart };
 
 fn touchStep(held: ?u16, id: u16, msg: u32, flags: u16) TouchStep {
     if (msg == WM_POINTERDOWN) {
-        // Only the first finger, and only while no other is the pointer.
-        return if (held == null and flags & POINTER_FLAG_PRIMARY != 0) .down else .ignore;
+        // Only the first finger. Another finger while one is down is never
+        // the primary one, so a primary down while one is still held means
+        // that one's up never arrived: it is cancelled, this one begins.
+        if (flags & POINTER_FLAG_PRIMARY == 0) return .ignore;
+        return if (held == null) .down else .restart;
     }
     if (held != id) return .ignore;
     if (msg == WM_POINTERUP) return if (flags & POINTER_FLAG_CANCELED != 0) .cancel else .up;
@@ -621,9 +649,14 @@ fn touchStep(held: ?u16, id: u16, msg: u32, flags: u16) TouchStep {
 test "touchStep: the primary finger is the pointer, other fingers nothing, a cancel ends it" {
     const prim = POINTER_FLAG_PRIMARY | POINTER_FLAG_INCONTACT;
     try std.testing.expectEqual(TouchStep.down, touchStep(null, 3, WM_POINTERDOWN, prim));
-    // A second finger while the first is down, a non-primary first contact.
-    try std.testing.expectEqual(TouchStep.ignore, touchStep(3, 4, WM_POINTERDOWN, prim));
+    // A second finger while the first is down (never primary), a
+    // non-primary first contact.
+    try std.testing.expectEqual(TouchStep.ignore, touchStep(3, 4, WM_POINTERDOWN, POINTER_FLAG_INCONTACT));
     try std.testing.expectEqual(TouchStep.ignore, touchStep(null, 4, WM_POINTERDOWN, POINTER_FLAG_INCONTACT));
+    // A new primary finger while one is held (its up was lost): the held
+    // one ends cancelled and the new one begins, whatever its id.
+    try std.testing.expectEqual(TouchStep.restart, touchStep(3, 4, WM_POINTERDOWN, prim));
+    try std.testing.expectEqual(TouchStep.restart, touchStep(3, 3, WM_POINTERDOWN, prim));
     try std.testing.expectEqual(TouchStep.move, touchStep(3, 3, WM_POINTERUPDATE, prim));
     try std.testing.expectEqual(TouchStep.ignore, touchStep(3, 4, WM_POINTERUPDATE, POINTER_FLAG_INCONTACT));
     // Hovering (no contact) moves nothing.
@@ -632,6 +665,14 @@ test "touchStep: the primary finger is the pointer, other fingers nothing, a can
     try std.testing.expectEqual(TouchStep.cancel, touchStep(3, 3, WM_POINTERUP, POINTER_FLAG_PRIMARY | POINTER_FLAG_CANCELED));
     try std.testing.expectEqual(TouchStep.cancel, touchStep(3, 3, WM_POINTERUPDATE, prim | POINTER_FLAG_CANCELED));
     try std.testing.expectEqual(TouchStep.ignore, touchStep(null, 3, WM_POINTERUP, POINTER_FLAG_PRIMARY));
+}
+
+test "takesPointer: a finger's down, moves, up and capture loss; never its activation" {
+    for ([_]u32{ WM_POINTERUPDATE, WM_POINTERDOWN, WM_POINTERUP, WM_POINTERCAPTURECHANGED }) |m| try std.testing.expect(takesPointer(m));
+    // WM_POINTERACTIVATE goes on to DefWindowProc: a tap activates the window.
+    try std.testing.expect(!takesPointer(WM_POINTERACTIVATE));
+    try std.testing.expect(!takesPointer(0x0248)); // WM_POINTERENTER
+    try std.testing.expect(!takesPointer(0x024A)); // WM_POINTERLEAVE
 }
 
 /// The source of the mouse message being handled: Windows marks the ones
