@@ -685,7 +685,7 @@ fn cancelTouch() void {
     if (state.touch == null) return;
     state.touch = null;
     const at = MetalView.px(state.touch_last);
-    state.push(.{ .mouse_up = .{ .x = at[0], .y = at[1], .cancelled = true } });
+    state.push(.{ .mouse_up = .{ .x = at[0], .y = at[1], .cancelled = true, .source = .touch } });
 }
 
 // ----------------------------------------------------------- clipboard
@@ -926,7 +926,7 @@ const MetalView = struct {
 
     /// One finger is the pointer (the view takes one touch at a time):
     /// mouse_down where it lands, mouse_move (left held) as it moves,
-    /// mouse_up where it lifts. What a drag means (scrolling, a swipe) and
+    /// mouse_up where it lifts (each with `source` .touch). What a drag means (scrolling, a swipe) and
     /// what a tap is (a release without moving) is the app's to decide.
     fn began(_: *Object, _: *Selector, touches: ?*Object, _: ?*Object) callconv(.c) void {
         if (state.touch != null) return;
@@ -934,7 +934,7 @@ const MetalView = struct {
         state.touch = t.touch;
         state.touch_last = t.p;
         const at = px(t.p);
-        state.push(.{ .mouse_down = .{ .x = at[0], .y = at[1] } });
+        state.push(.{ .mouse_down = .{ .x = at[0], .y = at[1], .source = .touch } });
     }
 
     fn moved(_: *Object, _: *Selector, touches: ?*Object, _: ?*Object) callconv(.c) void {
@@ -942,7 +942,7 @@ const MetalView = struct {
         if (state.touch != t.touch) return;
         state.touch_last = t.p;
         const at = px(t.p);
-        state.push(.{ .mouse_move = .{ .x = at[0], .y = at[1], .left_held = true } });
+        state.push(.{ .mouse_move = .{ .x = at[0], .y = at[1], .left_held = true, .source = .touch } });
     }
 
     fn ended(_: *Object, _: *Selector, touches: ?*Object, _: ?*Object) callconv(.c) void {
@@ -950,7 +950,7 @@ const MetalView = struct {
         if (state.touch != t.touch) return;
         state.touch = null;
         const at = px(t.p);
-        state.push(.{ .mouse_up = .{ .x = at[0], .y = at[1] } });
+        state.push(.{ .mouse_up = .{ .x = at[0], .y = at[1], .source = .touch } });
     }
 
     /// The system took the touch (a gesture, a call): the press ends

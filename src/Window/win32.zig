@@ -5,6 +5,10 @@
 //! while the user drags the border (WM_ENTERSIZEMOVE..WM_EXITSIZEMOVE):
 //! Windows then runs its own modal loop, and the live callback is the only
 //! way to redraw during it.
+//!
+//! Touch: the primary finger arrives as WM_POINTER messages and is taken
+//! here (touchPointer), as mouse events with `source` .touch; pens and
+//! touchpads stay with Windows' mouse messages (a pen's marked .pen).
 
 const std = @import("std");
 const W = @import("Windows");
@@ -69,6 +73,11 @@ pub const Window = struct {
     live_fn: ?root.LiveFn = null,
     in_size_move: bool = false,
     closed: bool = false,
+    /// The finger that is the pointer (its WM_POINTER id) while it is
+    /// down, and where it was last (client pixels): one touch at a time,
+    /// as on iOS.
+    touch_id: ?u16 = null,
+    touch_last: [2]f32 = .{ 0, 0 },
 
     pub fn init(gpa: std.mem.Allocator, title: []const u8, width: u32, height: u32) !*Window {
         enableDpiAwareness();
@@ -184,6 +193,18 @@ pub const Window = struct {
             self.queue.push(.{ .media = m });
             return @enumFromInt(1);
         }
+        // A finger on the touch screen (WM_POINTER*, not in the Messages
+        // enum): see `touchPointer`.
+        if ((msg >= WM_POINTERUPDATE and msg <= WM_POINTERUP) or msg == WM_POINTERCAPTURECHANGED) return self.touchPointer(hwnd, msg, wp, lp);
+        // Tablet mode on or off, a keyboard attached or taken off: the app
+        // asks again what input there is. DefWindowProc still sees it.
+        if (msg == WM_SETTINGCHANGE) {
+            if (lpi != 0) {
+                const name: [*:0]const u16 = @ptrFromInt(@as(usize, @bitCast(lpi)));
+                if (postureSetting(name)) self.queue.push(.posture);
+            }
+            return null;
+        }
         switch (@as(M, @enumFromInt(msg))) {
             .close => {
                 self.queue.push(.close);
@@ -239,20 +260,20 @@ pub const Window = struct {
                 };
                 // Keep receiving moves (and the up) while dragging outside.
                 if (button == .left) _ = USER.SetCapture(hwnd);
-                self.queue.push(.{ .mouse_down = .{ .x = p[0], .y = p[1], .button = button, .mods = currentMods() } });
+                self.queue.push(.{ .mouse_down = .{ .x = p[0], .y = p[1], .button = button, .mods = currentMods(), .source = messageSource() } });
                 return .null;
             },
             .l_button_up => {
                 const p = mousePos(lp);
                 _ = USER.ReleaseCapture();
-                self.queue.push(.{ .mouse_up = .{ .x = p[0], .y = p[1] } });
+                self.queue.push(.{ .mouse_up = .{ .x = p[0], .y = p[1], .source = messageSource() } });
                 return .null;
             },
             .mouse_move => {
                 // Only drags matter to hosts; plain hovering is not queued.
                 if (wbits(wp) & MK_LBUTTON == 0) return .null;
                 const p = mousePos(lp);
-                self.queue.push(.{ .mouse_move = .{ .x = p[0], .y = p[1], .left_held = true } });
+                self.queue.push(.{ .mouse_move = .{ .x = p[0], .y = p[1], .left_held = true, .source = messageSource() } });
                 return .null;
             },
             .mouse_wheel, .mouse_h_wheel => |m| {
@@ -305,6 +326,51 @@ pub const Window = struct {
 
     fn runLive(self: *Window) void {
         if (self.live_fn) |f| f(self.live_ctx.?);
+    }
+
+    /// WM_POINTERDOWN / UPDATE / UP / CAPTURECHANGED. A finger on the
+    /// touch screen is taken here, so Windows makes no mouse messages and
+    /// no gestures of it (press-and-hold's right-click, panning): the
+    /// primary finger becomes mouse_down / mouse_move / mouse_up with
+    /// `source` .touch at once, like iOS's one-finger pointer, and the app
+    /// decides what a hold or a drag means. Other fingers are swallowed.
+    /// Mice, pens and touchpads go on to DefWindowProc, which makes their
+    /// mouse messages as before (a pen's carry its source:
+    /// messageSource).
+    fn touchPointer(self: *Window, hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) ?LRESULT {
+        const id = USER.loWord(wp);
+        const flags = USER.hiWord(wp);
+        if (msg == WM_POINTERCAPTURECHANGED) {
+            // The window lost the finger in flight: it ends without acting.
+            if (self.touch_id == id) {
+                self.touch_id = null;
+                self.queue.push(.{ .mouse_up = .{ .x = self.touch_last[0], .y = self.touch_last[1], .cancelled = true, .source = .touch } });
+            }
+            return null;
+        }
+        var kind: E.PointerInputType = .pointer;
+        if (!USER.GetPointerType(id, &kind).toBool() or kind != .touch) return null;
+        // Pointer positions are in screen coordinates.
+        var pt: S.POINT = .{ .x = USER.getXLParam(lp), .y = USER.getYLParam(lp) };
+        _ = USER.ScreenToClient(hwnd, &pt);
+        const at: [2]f32 = .{ @floatFromInt(pt.x), @floatFromInt(pt.y) };
+        switch (touchStep(self.touch_id, id, msg, flags)) {
+            .ignore => {},
+            .down => {
+                self.touch_id = id;
+                self.touch_last = at;
+                self.queue.push(.{ .mouse_down = .{ .x = at[0], .y = at[1], .mods = currentMods(), .source = .touch } });
+            },
+            .move => {
+                self.touch_last = at;
+                self.queue.push(.{ .mouse_move = .{ .x = at[0], .y = at[1], .left_held = true, .source = .touch } });
+            },
+            .up, .cancel => |s| {
+                self.touch_id = null;
+                self.queue.push(.{ .mouse_up = .{ .x = at[0], .y = at[1], .cancelled = s == .cancel, .source = .touch } });
+            },
+        }
+        return .null;
     }
 
     /// Returns true if the key was consumed.
@@ -522,6 +588,99 @@ test "mediaCommand: the four media commands from any device, nothing else" {
     try std.testing.expectEqual(Media.stop, mediaCommand(13).?);
     try std.testing.expect(mediaCommand(8) == null); // APPCOMMAND_VOLUME_MUTE
     try std.testing.expect(mediaCommand(11) == null); // NEXTTRACK
+}
+
+const WM_SETTINGCHANGE: u32 = 0x001A;
+const WM_POINTERUPDATE: u32 = 0x0245;
+const WM_POINTERDOWN: u32 = 0x0246;
+const WM_POINTERUP: u32 = 0x0247;
+const WM_POINTERCAPTURECHANGED: u32 = 0x024C;
+/// POINTER_MESSAGE_FLAG_* (the high word of a WM_POINTER wParam).
+const POINTER_FLAG_INCONTACT: u16 = 0x0004;
+const POINTER_FLAG_PRIMARY: u16 = 0x2000;
+const POINTER_FLAG_CANCELED: u16 = 0x8000;
+
+/// What a WM_POINTER message for touch `id` does to the finger that is
+/// the pointer (`held`: its id while it is down).
+const TouchStep = enum { ignore, down, move, up, cancel };
+
+fn touchStep(held: ?u16, id: u16, msg: u32, flags: u16) TouchStep {
+    if (msg == WM_POINTERDOWN) {
+        // Only the first finger, and only while no other is the pointer.
+        return if (held == null and flags & POINTER_FLAG_PRIMARY != 0) .down else .ignore;
+    }
+    if (held != id) return .ignore;
+    if (msg == WM_POINTERUP) return if (flags & POINTER_FLAG_CANCELED != 0) .cancel else .up;
+    if (msg == WM_POINTERUPDATE) {
+        if (flags & POINTER_FLAG_CANCELED != 0) return .cancel;
+        return if (flags & POINTER_FLAG_INCONTACT != 0) .move else .ignore;
+    }
+    return .ignore;
+}
+
+test "touchStep: the primary finger is the pointer, other fingers nothing, a cancel ends it" {
+    const prim = POINTER_FLAG_PRIMARY | POINTER_FLAG_INCONTACT;
+    try std.testing.expectEqual(TouchStep.down, touchStep(null, 3, WM_POINTERDOWN, prim));
+    // A second finger while the first is down, a non-primary first contact.
+    try std.testing.expectEqual(TouchStep.ignore, touchStep(3, 4, WM_POINTERDOWN, prim));
+    try std.testing.expectEqual(TouchStep.ignore, touchStep(null, 4, WM_POINTERDOWN, POINTER_FLAG_INCONTACT));
+    try std.testing.expectEqual(TouchStep.move, touchStep(3, 3, WM_POINTERUPDATE, prim));
+    try std.testing.expectEqual(TouchStep.ignore, touchStep(3, 4, WM_POINTERUPDATE, POINTER_FLAG_INCONTACT));
+    // Hovering (no contact) moves nothing.
+    try std.testing.expectEqual(TouchStep.ignore, touchStep(3, 3, WM_POINTERUPDATE, POINTER_FLAG_PRIMARY));
+    try std.testing.expectEqual(TouchStep.up, touchStep(3, 3, WM_POINTERUP, POINTER_FLAG_PRIMARY));
+    try std.testing.expectEqual(TouchStep.cancel, touchStep(3, 3, WM_POINTERUP, POINTER_FLAG_PRIMARY | POINTER_FLAG_CANCELED));
+    try std.testing.expectEqual(TouchStep.cancel, touchStep(3, 3, WM_POINTERUPDATE, prim | POINTER_FLAG_CANCELED));
+    try std.testing.expectEqual(TouchStep.ignore, touchStep(null, 3, WM_POINTERUP, POINTER_FLAG_PRIMARY));
+}
+
+/// The source of the mouse message being handled: Windows marks the ones
+/// it makes from a pen or a finger (GetMessageExtraInfo).
+fn messageSource() root.PointerSource {
+    const extra: isize = @backingInt(USER.GetMessageExtraInfo());
+    return sourceOf(@truncate(@as(usize, @bitCast(extra))));
+}
+
+/// MI_WP_SIGNATURE (0xFF515700 under the mask 0xFFFFFF00) marks a mouse
+/// message made from a pen or touch, and bit 0x80 then says touch.
+pub fn sourceOf(extra: u32) root.PointerSource {
+    if (extra & 0xFFFFFF00 != 0xFF515700) return .mouse;
+    return if (extra & 0x80 != 0) .touch else .pen;
+}
+
+test "sourceOf: the pen-or-touch signature and its touch bit" {
+    try std.testing.expectEqual(root.PointerSource.mouse, sourceOf(0));
+    try std.testing.expectEqual(root.PointerSource.mouse, sourceOf(0x12345680));
+    try std.testing.expectEqual(root.PointerSource.pen, sourceOf(0xFF515700));
+    try std.testing.expectEqual(root.PointerSource.pen, sourceOf(0xFF515701));
+    try std.testing.expectEqual(root.PointerSource.touch, sourceOf(0xFF515780));
+    try std.testing.expectEqual(root.PointerSource.touch, sourceOf(0xFF515782));
+}
+
+/// WM_SETTINGCHANGE's section name says the posture may have changed:
+/// "ConvertibleSlateMode" (tablet or laptop) or "UserInteractionMode"
+/// (Windows 10's tablet mode). Reads no further than the longer name.
+fn postureSetting(name: [*:0]const u16) bool {
+    const names = [_][]const u16{
+        std.unicode.utf8ToUtf16LeStringLiteral("ConvertibleSlateMode"),
+        std.unicode.utf8ToUtf16LeStringLiteral("UserInteractionMode"),
+    };
+    for (names) |want| {
+        var i: usize = 0;
+        while (i < want.len and name[i] == std.mem.littleToNative(u16, want[i])) i += 1;
+        if (i == want.len and name[i] == 0) return true;
+    }
+    return false;
+}
+
+test "postureSetting: the two section names only" {
+    const L = std.unicode.utf8ToUtf16LeStringLiteral;
+    try std.testing.expect(postureSetting(L("ConvertibleSlateMode")));
+    try std.testing.expect(postureSetting(L("UserInteractionMode")));
+    try std.testing.expect(!postureSetting(L("ConvertibleSlateModeX")));
+    try std.testing.expect(!postureSetting(L("Convertible")));
+    try std.testing.expect(!postureSetting(L("ImmersiveColorSet")));
+    try std.testing.expect(!postureSetting(L("")));
 }
 
 fn currentMods() Mods {

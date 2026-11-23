@@ -58,11 +58,12 @@
 //! `entry` runs on an app thread started once the scene's window exists;
 //! the same `while (pollEvent) ... waitEvents` loop runs there unchanged
 //! (see ios.zig, "Inverted control"). Events only some platforms produce:
-//! `.insets`, `.background` / `.foreground`, `.text_input`, `.media`
-//! (Win32 only so far), and `mouse_up.cancelled` (iOS). On iOS one finger
-//! is the pointer: mouse_down where it lands, mouse_move while it moves,
-//! mouse_up where it lifts; the app decides what a drag means (scroll,
-//! swipe).
+//! `.insets`, `.background` / `.foreground`, `.text_input`, `.media` and
+//! `.posture` (Win32 only so far), and `mouse_up.cancelled` (iOS, Win32
+//! touch). On iOS and on a Windows touch screen one finger is the
+//! pointer: mouse_down where it lands, mouse_move while it moves, mouse_up
+//! where it lifts, each with `source` .touch (Win32 pens: .pen; a mouse or
+//! trackpad: .mouse); the app decides what a drag means (scroll, swipe).
 //!
 //! Wayland extras (Linux only, outside the common interface): where the
 //! compositor draws no title bar, the backend draws one itself (wl_csd.zig);
@@ -138,6 +139,12 @@ pub const Key = enum {
 
 pub const MouseButton = enum { left, right, middle };
 
+/// What produced a pointer event: a mouse or trackpad, a finger on a touch
+/// screen, or a pen. Apps that treat touch differently (presses that act
+/// on release, drags that scroll, long presses) look at this per event, so
+/// a convertible's trackpad stays a mouse while its screen is touched.
+pub const PointerSource = enum { mouse, touch, pen };
+
 pub const Mods = bitpack struct(u8) {
     ctrl: bool = false,
     shift: bool = false,
@@ -160,15 +167,17 @@ pub const Event = union(enum) {
     /// arrives as the lowercase letter with `mods.ctrl`, Alt+character with
     /// `mods.alt`.
     char: struct { cp: u21, mods: Mods = .{} },
-    mouse_down: struct { x: f32, y: f32, button: MouseButton = .left, mods: Mods = .{} },
+    /// A press. A finger is the left button (`source` .touch).
+    mouse_down: struct { x: f32, y: f32, button: MouseButton = .left, mods: Mods = .{}, source: PointerSource = .mouse },
     /// Pointer moved with the left button held (plain hovering is not
     /// reported).
-    mouse_move: struct { x: f32, y: f32, left_held: bool = false },
+    mouse_move: struct { x: f32, y: f32, left_held: bool = false, source: PointerSource = .mouse },
     /// Left button released. `cancelled`: the OS took the press away (iOS:
     /// touchesCancelled, e.g. a system gesture or a call, or the interface
-    /// orientation changed): end the press without acting on it (no tap,
-    /// no committed drag).
-    mouse_up: struct { x: f32, y: f32, button: MouseButton = .left, cancelled: bool = false },
+    /// orientation changed; Win32: the touch was cancelled or its capture
+    /// lost): end the press without acting on it (no tap, no committed
+    /// drag).
+    mouse_up: struct { x: f32, y: f32, button: MouseButton = .left, cancelled: bool = false, source: PointerSource = .mouse },
     /// Wheel / trackpad scroll in notches (1.0 = one wheel detent).
     /// `dy` > 0: away from the user (scroll up); `dx` > 0: to the right.
     scroll: struct { x: f32, y: f32, dx: f32, dy: f32, mods: Mods = .{} },
@@ -190,6 +199,12 @@ pub const Event = union(enum) {
     /// keyboard's media keys). Never on Wayland, macOS or iOS yet (their
     /// remote-command APIs are a later step).
     media: Media,
+    /// The device's posture may have changed: a convertible went into or
+    /// out of tablet (slate) mode, a keyboard was attached or taken off
+    /// (Win32: WM_SETTINGCHANGE "ConvertibleSlateMode" or
+    /// "UserInteractionMode"). Ask the OS again what input it offers.
+    /// Never elsewhere yet.
+    posture,
 };
 
 /// What a media button asked for.
